@@ -10,8 +10,8 @@ output and 4e-3 for float16 output, in normalized units.
 
 | transform | evidence (`tests/test_pipelines.py`) |
 |---|---|
-| RandomResizedCrop | reference: recipes, non-square size, custom scale/ratio, `antialias=False`, fallback sizes |
-| Resize | reference: `(h, w)`, shorter side + CenterCrop, `antialias=False` |
+| RandomResizedCrop | reference: recipes, non-square size, custom scale/ratio, `antialias=False`, fallback sizes; bicubic with and without antialias, small scale, in a full recipe |
+| Resize | reference: `(h, w)`, shorter side + CenterCrop, `antialias=False`; bicubic upscale and downscale with and without antialias |
 | CenterCrop | reference: alone, after Resize, larger than the image (zero padding) |
 | RandomHorizontalFlip | reference: `p=1`, two flips |
 | ColorJitter | reference: each factor alone, all four with random order, inside RandomApply, after a blur (mean of the blurred image) |

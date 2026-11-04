@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- `interpolation="bicubic"` for RandomResizedCrop and Resize (string or
+  torchvision's `InterpolationMode`), matching torchvision's float bicubic
+  with and without antialias. Used by DeiT, ConvNeXt, MAE, DINO, OpenCLIP
+  and most ViT recipes. About twice the cost of bilinear (ImageNet recipe,
+  batch 256: 3.4 ms against 1.75 ms on an RTX PRO 4500).
 - `Compose(..., dtype=torch.bfloat16)`: bfloat16 output, rounded like
   `.to(torch.bfloat16)`, at the same speed as float16. SlangPy's torch
   bridge does not take bfloat16 tensors yet, so the kernels write bfloat16

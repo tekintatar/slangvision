@@ -47,19 +47,29 @@ def _range(value: Any, name: str, center: float, bound: tuple[float, float],
     return None if lo == hi == center else (lo, hi)
 
 
+def _interpolation(value: Any, name: str) -> str:
+    """torchvision's InterpolationMode (or its string value) -> "bilinear" | "bicubic"."""
+    mode = str(getattr(value, "value", value)).lower()
+    if mode not in ("bilinear", "bicubic"):
+        raise ValueError(f"{name}: interpolation must be bilinear or bicubic, got {value!r}")
+    return mode
+
+
 # ---------------------------------------------------------------- geometry
 # Geometry transforms edit sampler locals: the source box (gl, gt, gw, gh)
 # resampled to (RW, RH), then an offset (gcx, gcy) into that grid. The
 # source image is W x H.
 class RandomResizedCrop(Transform):
-    """torchvision RandomResizedCrop (bilinear), the box drawn per image."""
+    """torchvision RandomResizedCrop, the box drawn per image. ``interpolation``
+    is ``"bilinear"`` (default) or ``"bicubic"``, as a string or torchvision's
+    ``InterpolationMode``."""
 
     _kind = "geometry"
     _resamples = True
 
     def __init__(self, size: Any, scale: tuple[float, float] = (0.08, 1.0),
-                 ratio: tuple[float, float] = (3 / 4, 4 / 3), antialias: bool = True,
-                 same_on_batch: bool = False):
+                 ratio: tuple[float, float] = (3 / 4, 4 / 3), interpolation: Any = "bilinear",
+                 antialias: bool = True, same_on_batch: bool = False):
         self.size = _size2(size, "RandomResizedCrop")
         self.scale = (float(scale[0]), float(scale[1]))
         self.ratio = (float(ratio[0]), float(ratio[1]))
@@ -67,6 +77,7 @@ class RandomResizedCrop(Transform):
             raise ValueError(f"RandomResizedCrop: invalid scale {scale}")
         if not 0 < self.ratio[0] <= self.ratio[1]:
             raise ValueError(f"RandomResizedCrop: invalid ratio {ratio}")
+        self.interpolation = _interpolation(interpolation, "RandomResizedCrop")
         self.antialias = bool(antialias)
         self.same_on_batch = bool(same_on_batch)
 
@@ -77,19 +88,23 @@ class RandomResizedCrop(Transform):
                 f"RW = {w}; RH = {h};"]
 
     def __repr__(self) -> str:
-        return f"RandomResizedCrop(size={self.size}, scale={self.scale}, ratio={self.ratio})"
+        return (f"RandomResizedCrop(size={self.size}, scale={self.scale}, ratio={self.ratio}, "
+                f"interpolation={self.interpolation!r})")
 
 
 class Resize(Transform):
-    """torchvision Resize (bilinear): an int resizes the shorter side and
-    keeps the aspect ratio; (height, width) resizes to exactly that size."""
+    """torchvision Resize: an int resizes the shorter side and keeps the aspect
+    ratio; (height, width) resizes to exactly that size. ``interpolation`` is
+    ``"bilinear"`` (default) or ``"bicubic"``."""
 
     _kind = "geometry"
     _resamples = True
 
-    def __init__(self, size: Any, antialias: bool = True):
-        self.shorter = isinstance(size, int) or (isinstance(size, Sequence) and len(size) == 1)
+    def __init__(self, size: Any, interpolation: Any = "bilinear", antialias: bool = True):
+        self.shorter = isinstance(size, numbers.Integral) or (isinstance(size, Sequence)
+                                                              and len(size) == 1)
         self.size = _size2(size, "Resize")
+        self.interpolation = _interpolation(interpolation, "Resize")
         self.antialias = bool(antialias)
 
     def _geometry(self, rng: str) -> list[str]:
@@ -97,7 +112,8 @@ class Resize(Transform):
         return [f"resize_shorter(W, H, {h}, RW, RH);" if self.shorter else f"RW = {w}; RH = {h};"]
 
     def __repr__(self) -> str:
-        return f"Resize(size={self.size[0] if self.shorter else self.size})"
+        return (f"Resize(size={self.size[0] if self.shorter else self.size}, "
+                f"interpolation={self.interpolation!r})")
 
 
 class CenterCrop(Transform):

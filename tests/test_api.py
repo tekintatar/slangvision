@@ -68,6 +68,8 @@ def test_valid_pipelines_build_without_a_gpu():
     (lambda: A.Compose([A.RandomResizedCrop(8)] + [A.RandomHorizontalFlip()] * 2), "appears twice"),
     (lambda: A.Choice([]), "at least one"),
     (lambda: A.GaussianBlur(3, sigma=[1.0]), "sigma"),
+    (lambda: A.RandomResizedCrop(8, interpolation="nearest"), "interpolation"),
+    (lambda: A.Resize(8, interpolation="lanczos"), "interpolation"),
     (lambda: A.GaussianBlur((3, 5, 7)), "kernel_size"),
     (lambda: A.RandomApply([A.RandomHorizontalFlip()]), "flips"),
 ])
@@ -81,6 +83,12 @@ def test_numpy_scalars_and_short_sequences_are_accepted():
     assert A.Resize(np.int64(224)).size == (224, 224)
     assert A.ColorJitter(np.float32(0.4)).ranges[0] is not None
     assert A.GaussianBlur([3]).kernel_size == (3, 3)
+
+    class Mode:                     # stands in for torchvision's InterpolationMode
+        value = "bicubic"
+
+    assert A.RandomResizedCrop(8, interpolation=Mode()).interpolation == "bicubic"
+    assert A.Resize(8, interpolation="BICUBIC").interpolation == "bicubic"
     assert A.GaussianBlur(np.int64(5), sigma=np.float64(1.0)).kernel_size == (5, 5)
 
 

@@ -179,6 +179,7 @@ class Compose:
                              "different sizes: follow it with CenterCrop, or give Resize a "
                              "(height, width)")
         self._antialias = all(getattr(g, "antialias", True) for g in geometry)
+        self._bicubic = any(getattr(g, "interpolation", "") == "bicubic" for g in geometry)
         if self._size:
             self._check_blur(self._size)
 
@@ -257,7 +258,7 @@ class Compose:
                 f"    int rx = x + int({P(g + 6)}); int ry = y + int({P(g + 7)});",
                 "    if (rx < 0 || ry < 0 || rx >= RW || ry >= RH) return float4(0.0);",
                 f"    return resample(src, int({P(g)}), int({P(g + 1)}), int({P(g + 2)}), "
-                f"int({P(g + 3)}), rx, ry, RW, RH, {int(self._antialias)});",
+                f"int({P(g + 3)}), rx, ry, RW, RH, {int(self._antialias)}, {int(self._bicubic)});",
                 "}", ""]
 
         # later pass inputs and pre-passes

@@ -93,8 +93,9 @@ versions it saw.
 
 `RandomResizedCrop`, `Resize`, `CenterCrop`, `RandomHorizontalFlip`,
 `ColorJitter`, `RandomGrayscale`, `GaussianBlur`, `RandomSolarize`,
-`RandomApply` and `Normalize`, with torchvision's names and parameters.
-Every random transform takes `same_on_batch=False`. A SimCLR pipeline:
+`RandomApply` and `Normalize`, with torchvision's names and parameters,
+including bilinear or bicubic resizing. Every random transform takes
+`same_on_batch=False`. A SimCLR pipeline:
 
 ```python
 import slangvision as A

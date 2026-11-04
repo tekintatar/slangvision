@@ -60,8 +60,8 @@ the GPU device once per process); later calls reuse the compiled kernels.
 
 | transform | as in torchvision, except |
 |---|---|
-| `RandomResizedCrop(size, scale, ratio, antialias=True)` | box drawn per image |
-| `Resize(size, antialias=True)` | an int resizes the shorter side and must be followed by `CenterCrop`, so all images match |
+| `RandomResizedCrop(size, scale, ratio, interpolation="bilinear", antialias=True)` | box drawn per image |
+| `Resize(size, interpolation="bilinear", antialias=True)` | an int resizes the shorter side and must be followed by `CenterCrop`, so all images match |
 | `CenterCrop(size)` | — (a crop larger than the image pads with zeros, as torchvision does) |
 | `RandomHorizontalFlip(p=0.5)` | decided per image |
 | `ColorJitter(brightness, contrast, saturation, hue)` | factors and op order drawn per image |
@@ -71,8 +71,12 @@ the GPU device once per process); later calls reuse the compiled kernels.
 | `RandomSolarize(threshold, p=0.5)` | `threshold` is on the 0-1 scale (0.5, not 128) |
 | `Normalize(mean, std)` | must be last |
 
-Every random transform takes `same_on_batch=False`. Bilinear interpolation
-only.
+Every random transform takes `same_on_batch=False`. `interpolation` is
+`"bilinear"` or `"bicubic"` (or torchvision's `InterpolationMode`), with
+torchvision's filters: with `antialias=True` (the default) PyTorch's
+antialias kernels, cubic with a = -0.5 like PIL, and without it classic
+bicubic with a = -0.75. Bicubic float output can overshoot [0, 1], as
+torchvision's does; it costs about twice as much as bilinear.
 
 Pipeline rules, checked when you build the `Compose`:
 - Geometry comes first: at most one `RandomResizedCrop` or `Resize`, then

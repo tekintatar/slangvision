@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
 __all__ = ["max_reference_error"]
 
+_MODES: dict[str, Any] = {}     # filled with torchvision's InterpolationMode on first use
+
 
 def max_reference_error(pipeline: Compose, images: Any, layout: str = "chw") -> float:
     """Run ``pipeline`` on ``images`` and return the largest absolute
@@ -55,13 +57,17 @@ def _replay(pipeline: Compose, images: Any, params: "torch.Tensor",
 def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) -> "torch.Tensor":
     """One transform on one (3, H, W) float image, with this image's values."""
     import torchvision.transforms.v2.functional as F
+    from torchvision.transforms import InterpolationMode
+
+    _MODES.update(bilinear=InterpolationMode.BILINEAR, bicubic=InterpolationMode.BICUBIC)
 
     if isinstance(t, T.RandomResizedCrop):
         left, top, w, h = (int(v) for v in row[b.geo:b.geo + 4])
-        return F.resized_crop(img, top, left, h, w, list(t.size), antialias=t.antialias)
+        return F.resized_crop(img, top, left, h, w, list(t.size), antialias=t.antialias,
+                              interpolation=_MODES[t.interpolation])
     if isinstance(t, T.Resize):
         size = [t.size[0]] if t.shorter else list(t.size)
-        return F.resize(img, size, antialias=t.antialias)
+        return F.resize(img, size, antialias=t.antialias, interpolation=_MODES[t.interpolation])
     if isinstance(t, T.CenterCrop):
         return F.center_crop(img, list(t.size))
     if isinstance(t, T.RandomHorizontalFlip):

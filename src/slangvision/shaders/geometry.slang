@@ -1,16 +1,35 @@
 // shaders/geometry.slang — torchvision's resampling and crop geometry:
-// RandomResizedCrop, Resize, CenterCrop.
+// RandomResizedCrop, Resize, CenterCrop; bilinear and bicubic filters.
+
+// PyTorch's resampling filters (aten UpSample kernels). Antialias filters:
+// a triangle for bilinear and Keys' cubic with a = -0.5 for bicubic, both
+// stretched by the downscale factor. Without antialias, bicubic is Keys'
+// cubic with a = -0.75 on the four nearest taps.
+float aa_filter(float x, int bicubic)
+{
+    x = abs(x);
+    if (bicubic == 0)
+        return max(0.0, 1.0 - x);
+    if (x < 1.0)
+        return (1.5 * x - 2.5) * x * x + 1.0;
+    if (x < 2.0)
+        return (((x - 5.0) * x + 8.0) * x - 4.0) * -0.5;
+    return 0.0;
+}
+
+float cubic_near(float x) { return (1.25 * x - 2.25) * x * x + 1.0; }               // |x| <= 1
+float cubic_far(float x) { return ((-0.75 * x + 3.75) * x - 6.0) * x + 3.0; }        // 1 < |x| < 2
 
 // One output pixel of torchvision's resize of the box (left, top, cw, ch)
-// to (OW, OH): bilinear, align_corners=False; with aa != 0 the antialias
-// triangle filter, whose support widens with the downscale factor. Taps stay
-// inside the box. Returns [0, 1].
+// to (OW, OH), align_corners=False: bilinear (bicubic == 0) or bicubic, with
+// aa != 0 the antialias filters above. Taps stay inside the box. Returns
+// 0-1 values; bicubic can overshoot, as torchvision's float output does.
 float4 resample<S : IImageSource>(S src, int left, int top, int cw, int ch,
-                                  int ox, int oy, int OW, int OH, int aa)
+                                  int ox, int oy, int OW, int OH, int aa, int bicubic)
 {
     float sx = float(cw) / float(OW);
     float sy = float(ch) / float(OH);
-    if (aa == 0)
+    if (aa == 0 && bicubic == 0)
     {
         float fx = max((float(ox) + 0.5) * sx - 0.5, 0.0);
         float fy = max((float(oy) + 0.5) * sy - 0.5, 0.0);
@@ -24,8 +43,34 @@ float4 resample<S : IImageSource>(S src, int left, int top, int cw, int ch,
         float4 r1 = lerp(src.load(left + x0, top + y1), src.load(left + x1, top + y1), ax);
         return lerp(r0, r1, ay) * (1.0 / 255.0);
     }
-    float supx = sx >= 1.0 ? sx : 1.0;
-    float supy = sy >= 1.0 ? sy : 1.0;
+    if (aa == 0)
+    {
+        // four taps per axis around floor(real), clamped to the box
+        float rx = (float(ox) + 0.5) * sx - 0.5;
+        float ry = (float(oy) + 0.5) * sy - 0.5;
+        int ix = int(floor(rx));
+        int iy = int(floor(ry));
+        float tx = rx - float(ix);
+        float ty = ry - float(iy);
+        float wx0 = cubic_far(tx + 1.0), wx1 = cubic_near(tx), wx2 = cubic_near(1.0 - tx), wx3 = cubic_far(2.0 - tx);
+        float wy0 = cubic_far(ty + 1.0), wy1 = cubic_near(ty), wy2 = cubic_near(1.0 - ty), wy3 = cubic_far(2.0 - ty);
+        float4 acc = float4(0.0);
+        for (int j = 0; j < 4; ++j)
+        {
+            int y = top + clamp(iy - 1 + j, 0, ch - 1);
+            float wy = j == 0 ? wy0 : (j == 1 ? wy1 : (j == 2 ? wy2 : wy3));
+            int xa = left + clamp(ix - 1, 0, cw - 1);
+            int xb = left + clamp(ix, 0, cw - 1);
+            int xc = left + clamp(ix + 1, 0, cw - 1);
+            int xd = left + clamp(ix + 2, 0, cw - 1);
+            acc += wy * (wx0 * src.load(xa, y) + wx1 * src.load(xb, y) +
+                         wx2 * src.load(xc, y) + wx3 * src.load(xd, y));
+        }
+        return acc * (1.0 / 255.0);
+    }
+    float half = bicubic != 0 ? 2.0 : 1.0;          // filter support at scale 1
+    float supx = half * (sx >= 1.0 ? sx : 1.0);
+    float supy = half * (sy >= 1.0 ? sy : 1.0);
     float invx = sx >= 1.0 ? 1.0 / sx : 1.0;
     float invy = sy >= 1.0 ? 1.0 / sy : 1.0;
     float cx = (float(ox) + 0.5) * sx;
@@ -36,18 +81,18 @@ float4 resample<S : IImageSource>(S src, int left, int top, int cw, int ch,
     int ymax = min(int(cy + supy + 0.5), ch);
     float wxsum = 0.0;
     for (int x = xmin; x < xmax; ++x)
-        wxsum += max(0.0, 1.0 - abs((float(x) - cx + 0.5) * invx));
+        wxsum += aa_filter((float(x) - cx + 0.5) * invx, bicubic);
     float4 acc = float4(0.0);
     float wysum = 0.0;
     for (int y = ymin; y < ymax; ++y)
     {
-        float wy = max(0.0, 1.0 - abs((float(y) - cy + 0.5) * invy));
+        float wy = aa_filter((float(y) - cy + 0.5) * invy, bicubic);
+        wysum += wy;
         if (wy == 0.0) continue;
         float4 row = float4(0.0);
         for (int x = xmin; x < xmax; ++x)
-            row += max(0.0, 1.0 - abs((float(x) - cx + 0.5) * invx)) * src.load(left + x, top + y);
+            row += aa_filter((float(x) - cx + 0.5) * invx, bicubic) * src.load(left + x, top + y);
         acc += wy * row;
-        wysum += wy;
     }
     return acc * (1.0 / (255.0 * wxsum * wysum));
 }

@@ -89,6 +89,22 @@ def test_geometry_matches_torchvision(transforms, images):
     _check(transforms, images)
 
 
+@pytest.mark.parametrize("transforms", [
+    [A.RandomResizedCrop(64, interpolation="bicubic")],
+    [A.RandomResizedCrop((48, 80), scale=(0.02, 0.3), interpolation="bicubic")],
+    [A.RandomResizedCrop(64, interpolation="bicubic", antialias=False)],
+    [A.Resize(100, interpolation="bicubic"), A.CenterCrop(80)],
+    [A.Resize((300, 410), interpolation="bicubic")],                     # upscale
+    [A.Resize((300, 410), interpolation="bicubic", antialias=False)],
+    [A.Resize((40, 30), interpolation="bicubic", antialias=False)],      # downscale, no antialias
+    [A.RandomResizedCrop(64, interpolation="bicubic"), A.ColorJitter(0.4, 0.4, 0.4, 0.1),
+     A.Normalize(MEAN, STD)],
+], ids=str)
+def test_bicubic_matches_torchvision(transforms, images):
+    # float bicubic overshoots [0, 1] like torchvision's; nothing is clamped
+    _check(transforms, images)
+
+
 @pytest.mark.parametrize("op", [
     A.ColorJitter(brightness=0.5),
     A.ColorJitter(contrast=(0.2, 1.8)),
