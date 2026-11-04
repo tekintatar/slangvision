@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 — 2026-11-04
 
 ### Added
 - `slangvision`: GPU training augmentation for PyTorch on CUDA, moved out of
