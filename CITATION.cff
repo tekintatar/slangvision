@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use SlangVision in your research, please cite it as below."
+title: "SlangVision: GPU training augmentation for PyTorch in Slang"
+abstract: >-
+  SlangVision runs torchvision-style training augmentation on NVIDIA GPUs,
+  with a separate random draw for every image, compiled into a few fused
+  Slang kernels.
+type: software
+authors:
+  - family-names: Tatar
+    given-names: Tekin
+repository-code: "https://github.com/tekintatar/slangvision"
+url: "https://github.com/tekintatar/slangvision"
+license: Apache-2.0
+version: 0.1.0
+keywords:
+  - data-augmentation
+  - computer-vision
+  - gpu
+  - cuda
+  - pytorch
+  - slang

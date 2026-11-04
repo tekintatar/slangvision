@@ -1,0 +1,52 @@
+# GPU-free checks on every push to main and every pull request. Hosted
+# runners have no NVIDIA GPU, so the CUDA tests remain a manual step on a GPU
+# host (scripts/cuda_box/); see CONTRIBUTING.md.
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  no-gpu:
+    name: Lint, types, GPU-free tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # the oldest and newest supported Python; breakage rarely shows only in between
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          # CPU wheels: the GPU-free tests never touch CUDA
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[dev]"
+      - name: Check (whitespace, ruff, mypy, pytest -m "not gpu")
+        run: scripts/check.sh --no-gpu -ra
+      - name: Shell scripts
+        run: shellcheck scripts/check.sh scripts/cuda_box/*.sh
+
+  package:
+    name: Build and check the wheel and sdist
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Build (reproducible)
+        run: |
+          python -m pip install build==1.4.0 twine==7.0.0
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) python -m build
+      - name: Check archives
+        run: twine check dist/*

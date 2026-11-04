@@ -1,0 +1,185 @@
+# benchmarks/compare_pipelines.py
+# Training-augmentation pipelines on a batch: slangvision vs
+# torchvision v2 (batched, and one image at a time) vs Kornia. CUDA only.
+# Each library gets the same recipe and uint8 input; output is fp16 NCHW.
+#
+#   pip install torch torchvision kornia
+#   python benchmarks/compare_pipelines.py [--batch 256] [--iters 20]
+#       [--json out.json]
+#
+# Recipes (torchvision.transforms.v2 names):
+#   imagenet  RandomResizedCrop(224) + flip + ColorJitter(0.4, 0.4, 0.4, 0.1)
+#             + Normalize
+#   eval      Resize(256) + CenterCrop(224) + Normalize
+#   simclr    RandomResizedCrop(224) + flip + RandomApply(ColorJitter, 0.8)
+#             + RandomGrayscale(0.2) + RandomApply(GaussianBlur(23), 0.5)
+#             + RandomSolarize(0.5, 0.2) + Normalize
+# Input: a batch of photo-like 512x384 uint8 images already on the GPU
+# (decoding is not timed). Times are the median wall time of synced calls
+# and the summed GPU kernel time per call (torch profiler).
+#
+# Reference run (2026-11-03, NVIDIA H100 NVL, torch 2.13, torchvision 0.28,
+# Kornia 0.9.0, SlangPy 0.42; batch 256), wall ms (GPU ms). Measured with
+# the same kernels while they shipped as slangimage.augment:
+#
+#   recipe     slangvision   torchvision batch   torchvision per image   Kornia fp16
+#   imagenet   1.31 (1.05)   7.32 (7.05)         389 (50.9)              16.6 (6.45)
+#   eval       0.68 (0.42)   2.90 (2.87)         51.9 (8.55)             -
+#   simclr     2.30 (2.00)   7.6-12.6 (13.6-14.2) 390 (53.1)              22.3 (10.8)
+#
+# Second run (2026-11-04, slangvision 0.1.0, NVIDIA RTX PRO 4500 Blackwell,
+# driver 580, torch 2.13, torchvision 0.28, Kornia 0.9, SlangPy 0.42;
+# raw data in benchmarks/results/rtx_pro_4500_2026-11-04.json):
+#
+#   recipe     slangvision   torchvision batch   torchvision per image   Kornia fp16
+#   imagenet   1.71 (1.50)   20.2 (20.0)         228 (35.8)              19.9 (14.0)
+#   eval       0.86 (0.66)   5.63 (5.83)         27.8 (7.64)             -
+#   simclr     3.09 (2.87)   20.9 (19.9)         208 (40.6)              29.7 (23.8)
+#
+# Honest read:
+# - torchvision's batch mode draws ONE random setting for the whole batch, so
+#   it does less work than the per-image pipelines; its per-image loop is the
+#   like-for-like comparison. slangvision and Kornia draw per image.
+# - With one setting per batch, torchvision's cost swings from call to call
+#   (RandomApply blurs all 256 images or none): its simclr median was 7.6 ms
+#   in one run and 12.6 ms in another.
+# - Kornia's RandomResizedCrop does not antialias and its colour ops convert
+#   fp16 to fp32 internally; ours antialias like torchvision.
+# - In training, decoding usually limits throughput; these numbers are the GPU
+#   time augmentation takes from the model. See docs/GUIDE.md.
+
+from __future__ import annotations
+
+import argparse
+import json
+import platform
+import statistics
+import time
+from datetime import datetime, timezone
+
+import torch
+
+import slangvision as A
+
+MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+
+
+def photo_batch(n: int, h: int = 384, w: int = 512) -> torch.Tensor:
+    g = torch.Generator(device="cuda").manual_seed(0)
+    low = torch.rand(n, 3, h // 16, w // 16, device="cuda", generator=g)
+    x = torch.nn.functional.interpolate(low, size=(h, w), mode="bicubic", align_corners=False)
+    x = x + 0.04 * torch.randn(n, 3, h, w, device="cuda", generator=g)
+    return (x.clamp(0, 1) * 255).round().to(torch.uint8).contiguous()
+
+
+def ours() -> dict:
+    return {
+        "imagenet": A.Compose([A.RandomResizedCrop(224), A.RandomHorizontalFlip(),
+                               A.ColorJitter(0.4, 0.4, 0.4, 0.1), A.Normalize(MEAN, STD)]),
+        "eval": A.Compose([A.Resize(256), A.CenterCrop(224), A.Normalize(MEAN, STD)]),
+        "simclr": A.Compose([A.RandomResizedCrop(224), A.RandomHorizontalFlip(),
+                             A.RandomApply([A.ColorJitter(0.4, 0.4, 0.2, 0.1)], p=0.8),
+                             A.RandomGrayscale(p=0.2),
+                             A.RandomApply([A.GaussianBlur(23)], p=0.5),
+                             A.RandomSolarize(0.5, p=0.2), A.Normalize(MEAN, STD)]),
+    }
+
+
+def torchvision_recipes() -> dict:
+    from torchvision.transforms import v2
+
+    tail = [v2.ToDtype(torch.float16, scale=True), v2.Normalize(list(MEAN), list(STD))]
+    crop = [v2.RandomResizedCrop(224, antialias=True), v2.RandomHorizontalFlip()]
+    return {
+        "imagenet": v2.Compose(crop + [v2.ColorJitter(0.4, 0.4, 0.4, 0.1)] + tail),
+        "eval": v2.Compose([v2.Resize(256, antialias=True), v2.CenterCrop(224)] + tail),
+        "simclr": v2.Compose(crop + [v2.RandomApply([v2.ColorJitter(0.4, 0.4, 0.2, 0.1)], p=0.8),
+                                     v2.RandomGrayscale(p=0.2),
+                                     v2.RandomApply([v2.GaussianBlur(23)], p=0.5),
+                                     v2.RandomSolarize(128, p=0.2)] + tail),
+    }
+
+
+def kornia_recipes() -> dict:
+    try:
+        import kornia.augmentation as K
+    except ImportError:
+        return {}
+    norm = K.Normalize(mean=torch.tensor(MEAN), std=torch.tensor(STD))
+    crop = [K.RandomResizedCrop((224, 224)), K.RandomHorizontalFlip()]
+    return {
+        "imagenet": K.AugmentationSequential(*crop, K.ColorJitter(0.4, 0.4, 0.4, 0.1, p=1.0),
+                                             norm).cuda(),
+        "simclr": K.AugmentationSequential(
+            *crop, K.ColorJitter(0.4, 0.4, 0.2, 0.1, p=0.8), K.RandomGrayscale(p=0.2),
+            K.RandomGaussianBlur((23, 23), (0.1, 2.0), p=0.5),
+            K.RandomSolarize(thresholds=0.0, additions=0.0, p=0.2), norm).cuda(),
+    }
+
+
+def wall_ms(fn, x, iters: int, warmup: int) -> float:
+    for _ in range(warmup):
+        fn(x)
+    torch.cuda.synchronize()
+    times = []
+    for _ in range(iters):
+        t0 = time.perf_counter()
+        fn(x)
+        torch.cuda.synchronize()
+        times.append((time.perf_counter() - t0) * 1e3)
+    return statistics.median(times)
+
+
+def gpu_ms(fn, x, iters: int) -> tuple[float, int]:
+    from torch.profiler import ProfilerActivity, profile
+
+    fn(x)
+    torch.cuda.synchronize()
+    with profile(activities=[ProfilerActivity.CUDA]) as prof:
+        for _ in range(iters):
+            fn(x)
+        torch.cuda.synchronize()
+    events = [e for e in prof.events()
+              if e.device_type == torch.autograd.DeviceType.CUDA and e.device_time > 0]
+    return sum(e.device_time for e in events) / iters / 1e3, round(len(events) / iters)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Compare augmentation pipelines on one GPU batch.")
+    ap.add_argument("--batch", type=int, default=256)
+    ap.add_argument("--iters", type=int, default=20)
+    ap.add_argument("--json", help="write results to this file")
+    args = ap.parse_args()
+    if not torch.cuda.is_available():
+        raise SystemExit("needs a CUDA GPU")
+
+    x = photo_batch(args.batch)
+    tv, ko = torchvision_recipes(), kornia_recipes()
+    rows = []
+    for recipe, pipe in ours().items():
+        methods = {
+            "slangvision": pipe,
+            "torchvision batch (one setting)": tv[recipe],
+            "torchvision per image": lambda b, t=tv[recipe]: torch.stack([t(im) for im in b]),
+        }
+        if recipe in ko:
+            methods["Kornia fp16 per image"] = lambda b, k=ko[recipe]: k(b.half() / 255.0)
+        for name, fn in methods.items():
+            loop = "per image" in name and "Kornia" not in name
+            ms = wall_ms(fn, x, iters=3 if loop else args.iters, warmup=1 if loop else 5)
+            g, kernels = gpu_ms(fn, x, iters=1 if loop else 5)
+            row = {"recipe": recipe, "method": name, "wall_ms": round(ms, 2),
+                   "gpu_ms": round(g, 2), "kernels": kernels,
+                   "images_per_s": round(args.batch / ms * 1e3)}
+            rows.append(row)
+            print(f"{recipe:9} {name:32} {ms:9.2f} ms  gpu {g:8.2f} ms  {kernels:6} kernels")
+    if args.json:
+        meta = {"date": datetime.now(timezone.utc).isoformat(), "gpu": torch.cuda.get_device_name(),
+                "torch": torch.__version__, "slangvision": A.__version__,
+                "python": platform.python_version(), "batch": args.batch}
+        with open(args.json, "w") as f:
+            json.dump({"meta": meta, "results": rows}, f, indent=1)
+
+
+if __name__ == "__main__":
+    main()

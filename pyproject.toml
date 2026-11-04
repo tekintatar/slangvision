@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "slangvision"
+version = "0.1.0"
+description = "GPU training augmentation for PyTorch: torchvision's transforms, per-image randomness, fused Slang kernels."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+# upper bound tracks slangpy's available wheels (no cp314 for slangpy 0.42)
+requires-python = ">=3.10,<3.14"
+authors = [{ name = "Tekin Tatar" }]
+keywords = ["data-augmentation", "computer-vision", "deep-learning", "gpu", "cuda", "pytorch", "torchvision", "slang", "slangpy"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Typing :: Typed",
+]
+# The package imports without torch (only its GPU-free tests do that); running
+# a pipeline needs it.
+dependencies = [
+    "slangpy>=0.42,<0.44",
+    "numpy",
+    "torch",
+]
+
+[project.optional-dependencies]
+# torchvision: the reference implementation the tests compare against
+dev = ["pytest", "ruff", "mypy>=1.14", "torchvision"]
+bench = ["torchvision", "kornia"]
+
+[project.urls]
+Homepage = "https://github.com/tekintatar/slangvision"
+Repository = "https://github.com/tekintatar/slangvision"
+Issues = "https://github.com/tekintatar/slangvision/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/slangvision"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/slangvision/**/*.py",
+    "/src/slangvision/**/*.slang",
+    "/src/slangvision/py.typed",
+    "/pyproject.toml",
+    "/README.md",
+    "/LICENSE",
+    "/NOTICE",
+    "/.gitignore",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "gpu: needs a CUDA GPU (applied automatically in conftest.py); `-m 'not gpu'` runs the rest",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/slangvision"]
+mypy_path = "src"
+follow_untyped_imports = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+# nvidia: the namespace of NVIDIA's pip wheels (NVRTC), installed with torch
+module = ["torch", "torch.*", "torchvision", "torchvision.*", "nvidia"]
+ignore_missing_imports = true

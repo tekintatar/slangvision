@@ -1,0 +1,100 @@
+{
+ "meta": {
+  "date": "2026-11-04T19:57:02.714485+00:00",
+  "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+  "torch": "2.13.0+cu130",
+  "slangvision": "0.1.0",
+  "python": "3.12.3",
+  "batch": 256
+ },
+ "results": [
+  {
+   "recipe": "imagenet",
+   "method": "slangvision",
+   "wall_ms": 1.71,
+   "gpu_ms": 1.5,
+   "kernels": 13,
+   "images_per_s": 149726
+  },
+  {
+   "recipe": "imagenet",
+   "method": "torchvision batch (one setting)",
+   "wall_ms": 20.24,
+   "gpu_ms": 19.98,
+   "kernels": 86,
+   "images_per_s": 12648
+  },
+  {
+   "recipe": "imagenet",
+   "method": "torchvision per image",
+   "wall_ms": 228.23,
+   "gpu_ms": 35.78,
+   "kernels": 22140,
+   "images_per_s": 1122
+  },
+  {
+   "recipe": "imagenet",
+   "method": "Kornia fp16 per image",
+   "wall_ms": 19.86,
+   "gpu_ms": 14.03,
+   "kernels": 840,
+   "images_per_s": 12890
+  },
+  {
+   "recipe": "eval",
+   "method": "slangvision",
+   "wall_ms": 0.86,
+   "gpu_ms": 0.66,
+   "kernels": 9,
+   "images_per_s": 296420
+  },
+  {
+   "recipe": "eval",
+   "method": "torchvision batch (one setting)",
+   "wall_ms": 5.63,
+   "gpu_ms": 5.83,
+   "kernels": 10,
+   "images_per_s": 45500
+  },
+  {
+   "recipe": "eval",
+   "method": "torchvision per image",
+   "wall_ms": 27.84,
+   "gpu_ms": 7.64,
+   "kernels": 2562,
+   "images_per_s": 9195
+  },
+  {
+   "recipe": "simclr",
+   "method": "slangvision",
+   "wall_ms": 3.09,
+   "gpu_ms": 2.87,
+   "kernels": 15,
+   "images_per_s": 82761
+  },
+  {
+   "recipe": "simclr",
+   "method": "torchvision batch (one setting)",
+   "wall_ms": 20.89,
+   "gpu_ms": 19.87,
+   "kernels": 62,
+   "images_per_s": 12257
+  },
+  {
+   "recipe": "simclr",
+   "method": "torchvision per image",
+   "wall_ms": 208.33,
+   "gpu_ms": 40.61,
+   "kernels": 19650,
+   "images_per_s": 1229
+  },
+  {
+   "recipe": "simclr",
+   "method": "Kornia fp16 per image",
+   "wall_ms": 29.67,
+   "gpu_ms": 23.81,
+   "kernels": 980,
+   "images_per_s": 8629
+  }
+ ]
+}
