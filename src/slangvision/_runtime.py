@@ -160,7 +160,7 @@ class ImageTable:
     ptrs: "torch.Tensor | None"     # (B,) int64 device addresses
     meta: "torch.Tensor | None"     # (B, 2) int32 rows: (H, W)
     count: int
-    size: tuple[int, int] | None    # (H, W) when every image has it
+    dims: list                      # (H, W) of each image (one entry for a batch tensor)
     device: "torch.device"
     keep: list                      # the (contiguous) inputs, alive during the call
 
@@ -205,17 +205,16 @@ def image_table(images: Any, layout: str) -> ImageTable:
         B = x.shape[0]
         H, W = (x.shape[2], x.shape[3]) if layout == "chw" else (x.shape[1], x.shape[2])
         if B == 0:
-            return ImageTable(None, None, 0, (H, W), dev, [])
+            return ImageTable(None, None, 0, [(H, W)], dev, [])
         ptrs = x.data_ptr() + torch.arange(B, dtype=torch.int64, device=dev) * (3 * H * W)
         meta = torch.tensor([H, W], dtype=torch.int32, device=dev).repeat(B, 1)
-        return ImageTable(ptrs, meta, B, (H, W), dev, [x])
+        return ImageTable(ptrs, meta, B, [(H, W)], dev, [x])
     imgs = [_checked(t, dev, layout, batched=False) for t in images]
     if not imgs:
-        return ImageTable(None, None, 0, None, dev, [])
+        return ImageTable(None, None, 0, [], dev, [])
     dims = [(t.shape[1], t.shape[2]) if layout == "chw" else (t.shape[0], t.shape[1])
             for t in imgs]
     ptrs = torch.tensor([t.data_ptr() for t in imgs], dtype=torch.int64).pin_memory()
     meta = torch.tensor(dims, dtype=torch.int32).pin_memory()
-    size = dims[0] if all(d == dims[0] for d in dims) else None
     return ImageTable(ptrs.to(dev, non_blocking=True), meta.to(dev, non_blocking=True),
-                      len(imgs), size, dev, imgs)
+                      len(imgs), dims, dev, imgs)

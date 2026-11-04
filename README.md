@@ -91,9 +91,10 @@ versions it saw.
 
 ## Transforms
 
-`RandomResizedCrop`, `Resize`, `CenterCrop`, `RandomHorizontalFlip`,
-`ColorJitter`, `RandomGrayscale`, `GaussianBlur`, `RandomSolarize`,
-`RandomApply` and `Normalize`, with torchvision's names and parameters,
+`RandomResizedCrop`, `Resize`, `CenterCrop`, `RandomCrop`, `Pad`,
+`RandomHorizontalFlip`, `RandomVerticalFlip`, `ColorJitter`,
+`RandomGrayscale`, `GaussianBlur`, `RandomSolarize`, `RandomApply`,
+`RandomChoice` and `Normalize`, with torchvision's names and parameters,
 including bilinear or bicubic resizing. Every random transform takes
 `same_on_batch=False`. A SimCLR pipeline:
 

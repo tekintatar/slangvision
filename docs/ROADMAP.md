@@ -7,11 +7,15 @@
   custom ops. Transforms: RandomResizedCrop, Resize, CenterCrop,
   RandomHorizontalFlip, ColorJitter, RandomApply, RandomGrayscale,
   GaussianBlur, RandomSolarize, Normalize. CUDA only.
+- **Since 0.1.0** (unreleased): bfloat16 output, bicubic resizing,
+  RandomCrop (padding modes), Pad, RandomVerticalFlip, RandomChoice. Next,
+  by usage in common training recipes: RandomErasing, MixUp/CutMix, a warp
+  pass (RandomRotation/Affine/Perspective), then the policies below.
 - **Phase 2 — policies**, if phase 1 is used: complete RandAugment and
   TrivialAugmentWide (their geometric ops through a per-image 3x3 matrix and
   one resample, which also brings RandomAffine/RandomRotation/
   RandomPerspective) and the ops they need (sharpness, posterize, invert,
-  autocontrast, equalize), RandomChoice. Decide first whether posterize and
+  autocontrast, equalize). Decide first whether posterize and
   equalize match torchvision's float or uint8 paths (RandAugment usually
   runs on uint8).
 - **Phase 3 — targets**, only if users ask: masks, boxes and keypoints with

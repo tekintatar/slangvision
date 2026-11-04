@@ -61,11 +61,14 @@ the GPU device once per process); later calls reuse the compiled kernels.
 | transform | as in torchvision, except |
 |---|---|
 | `RandomResizedCrop(size, scale, ratio, interpolation="bilinear", antialias=True)` | box drawn per image |
-| `Resize(size, interpolation="bilinear", antialias=True)` | an int resizes the shorter side and must be followed by `CenterCrop`, so all images match |
+| `Resize(size, interpolation="bilinear", antialias=True)` | an int resizes the shorter side and must be followed by `CenterCrop` or `RandomCrop`, so all images match |
 | `CenterCrop(size)` | — (a crop larger than the image pads with zeros, as torchvision does) |
-| `RandomHorizontalFlip(p=0.5)` | decided per image |
+| `RandomCrop(size, padding=None, pad_if_needed=False, fill=0, padding_mode="constant")` | position drawn per image; `fill` is on the 0-1 scale |
+| `Pad(padding, fill=0, padding_mode="constant")` | `fill` is on the 0-1 scale |
+| `RandomHorizontalFlip(p=0.5)`, `RandomVerticalFlip(p=0.5)` | decided per image |
 | `ColorJitter(brightness, contrast, saturation, hue)` | factors and op order drawn per image |
-| `RandomApply(transforms, p=0.5)` | decided per image; holds colour ops, or exactly one blur or `NeighbourhoodOp` (not flips: `RandomHorizontalFlip` has its own `p`) |
+| `RandomApply(transforms, p=0.5)` | decided per image; holds colour ops, or exactly one blur or `NeighbourhoodOp` (not flips: they have their own `p`) |
+| `RandomChoice(transforms, p=None)` | chosen per image (weights `p`, equal by default); holds colour ops and at most one blur or `NeighbourhoodOp` |
 | `RandomGrayscale(p=0.1)` | decided per image; output keeps 3 channels |
 | `GaussianBlur(kernel_size, sigma=(0.1, 2.0))` | sigma drawn per image; the kernel radius must be smaller than the image, as torchvision's reflect padding requires |
 | `RandomSolarize(threshold, p=0.5)` | `threshold` is on the 0-1 scale (0.5, not 128) |
@@ -78,15 +81,30 @@ antialias kernels, cubic with a = -0.5 like PIL, and without it classic
 bicubic with a = -0.75. Bicubic float output can overshoot [0, 1], as
 torchvision's does; it costs about twice as much as bilinear.
 
+The CIFAR recipe is `[RandomCrop(32, padding=4), RandomHorizontalFlip(),
+Normalize(...)]`. DeiT III's ThreeAugment is
+`[Resize(224, interpolation="bicubic"), RandomCrop(224, padding=4,
+padding_mode="reflect"), RandomHorizontalFlip(),
+RandomChoice([RandomGrayscale(p=1), RandomSolarize(0.5, p=1),
+GaussianBlur(13)]), ColorJitter(0.3, 0.3, 0.3), Normalize(...)]`; DeiT
+blurs with PIL's radius-based filter, which `GaussianBlur` only
+approximates. `RandomChoice(..., same_on_batch=True)` makes the same choice
+for every image.
+
 Pipeline rules, checked when you build the `Compose`:
 - Geometry comes first: at most one `RandomResizedCrop` or `Resize`, then
-  at most one `CenterCrop`. It fixes the output size, so `Resize(int)`
-  (shorter side, aspect kept) needs the `CenterCrop`; `Resize((h, w))`
-  works alone. With no geometric
-  transform, the input must be one same-size batch and the output keeps its
-  size.
-- `RandomHorizontalFlip` goes anywhere after the geometric transforms and
-  before any `NeighbourhoodOp` you define (it commutes with colour ops and
+  any sequence of `Pad`, `CenterCrop` and `RandomCrop` (each pads with its
+  own `padding_mode`, so they compose as torchvision applies them one after
+  the other). Like torchvision, reflect padding must be smaller than the
+  image and symmetric padding at most its size, or the call raises
+  `ValueError`. All images must end up the same size: `Resize(int)`
+  (shorter side, aspect kept) needs a crop after it; `Resize((h, w))`,
+  `RandomResizedCrop` and the crops fix the size; with only `Pad` or no
+  geometric transform, all input images must be the same size. A
+  `RandomCrop` larger than a (padded) image raises `ValueError`, as in
+  torchvision.
+- Flips go anywhere after the geometric transforms and
+  before any `NeighbourhoodOp` you define (they commute with colour ops and
   with Gaussian blur).
 - Each transform object appears once; create a second one to use it twice.
 - `Normalize`, if present, is last. Without it the output is in [0, 1].
@@ -264,6 +282,10 @@ has the reference runs and raw data). How to read them:
   is blurred); its per-image loop is the like-for-like comparison. Kornia
   draws per image in one batched call; its RandomResizedCrop does not
   antialias.
+- Each call also has a fixed host-side cost of about 0.2 ms (SlangPy
+  kernel dispatches from Python), whatever the image size: the gap between
+  wall and GPU time in the benchmark. It overlaps with the GPU running the
+  model.
 - In training, decoding usually decides throughput. On one H100 NVL with 18
   CPU cores, the CPU pipeline held both ResNet-18 and ResNet-50 near 2,700
   images/s; moving only the augmentation to the GPU gave 1.4x and 1.2x, and

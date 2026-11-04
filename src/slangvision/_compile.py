@@ -17,14 +17,19 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Sequence
 
-from ._base import P, Binding, NeighbourhoodOp, Transform, _UserOp
-from .transforms import (CenterCrop, ColorJitter, GaussianBlur, Normalize, RandomApply,
-                         RandomHorizontalFlip, RandomResizedCrop, Resize)
+from ._base import P, Binding, NeighbourhoodOp, Transform, _UserOp, lit
+from .transforms import (CenterCrop, ColorJitter, GaussianBlur, Normalize, Pad, RandomApply,
+                         RandomChoice, RandomCrop, RandomHorizontalFlip, RandomResizedCrop,
+                         RandomVerticalFlip, Resize, _Window)
 
 if TYPE_CHECKING:
     import torch
 
-_GEO_SLOTS = 8          # gl, gt, gw, gh, RW, RH, gcx, gcy
+# Parameter slots for geometry: the resample's source box and output grid
+# (gl, gt, gw, gh, RW, RH), then four per window op (Pad, CenterCrop,
+# RandomCrop): its offset into the previous grid and that grid's size.
+_RESAMPLE_SLOTS = 6
+_WINDOW_SLOTS = 4
 _CHUNK = 8              # columns per thread in statistic passes
 
 # Intermediates between passes are (B, 3, H, W) tensors of type Mid (float16,
@@ -76,8 +81,8 @@ def _dtype_name(dtype: Any) -> str:
     return name
 
 
-_BUILT_IN = (RandomResizedCrop, Resize, CenterCrop, RandomHorizontalFlip, ColorJitter,
-             GaussianBlur, RandomApply, Normalize)
+_BUILT_IN = (RandomResizedCrop, Resize, CenterCrop, Pad, RandomCrop, RandomHorizontalFlip,
+             RandomVerticalFlip, ColorJitter, GaussianBlur, RandomApply, RandomChoice, Normalize)
 
 
 def _walk(transforms: Sequence[Transform]):
@@ -89,13 +94,21 @@ def _walk(transforms: Sequence[Transform]):
         yield from _walk(t._children())
 
 
-def _unwrap(t: Transform) -> tuple[list[RandomApply], Transform]:
-    """A neighbourhood op and the RandomApply wrappers that gate it."""
-    gates = []
-    while isinstance(t, RandomApply):
-        gates.append(t)
-        t = t.transforms[0]
+def _unwrap(t: Transform) -> tuple[list[tuple[Transform, Transform]], Transform]:
+    """A neighbourhood op and the (RandomApply | RandomChoice, child) wrappers
+    that gate it."""
+    gates: list[tuple[Transform, Transform]] = []
+    while isinstance(t, (RandomApply, RandomChoice)):
+        child = next(c for c in t.transforms if c._kind == "neighbourhood")
+        gates.append((t, child))
+        t = child
     return gates, t
+
+
+def _resize_shorter(hw: tuple[int, int], size: int) -> tuple[int, int]:
+    """torchvision Resize(int): shorter side to size (as resize_shorter in geometry.slang)."""
+    h, w = hw
+    return (size * h // w, size) if w <= h else (size, size * w // h)
 
 
 class Compose:
@@ -103,10 +116,10 @@ class Compose:
     a few Slang kernels. Random values are drawn per image.
 
     ``Compose(transforms, dtype=torch.float16)``; ``torch.bfloat16`` and
-    ``torch.float32`` output are also available. Geometric transforms
-    (RandomResizedCrop, or Resize then CenterCrop, or CenterCrop) come first
-    and fix the output size; RandomHorizontalFlip and pointwise ops follow in
-    any order; Normalize, if present, is last.
+    ``torch.float32`` output are also available. Geometric transforms come
+    first: an optional RandomResizedCrop or Resize, then any sequence of Pad,
+    CenterCrop and RandomCrop; they fix the output size. Flips and colour ops
+    follow in any order; Normalize, if present, is last.
 
     Calling the pipeline returns a contiguous ``(B, 3, H, W)`` tensor of
     ``dtype`` on the current CUDA stream. ``images`` is a ``(B, 3, H, W)``
@@ -148,8 +161,6 @@ class Compose:
                 if getattr(t, "_resamples", False) and geometry:
                     raise ValueError(f"{t!r}: one Resize or RandomResizedCrop per pipeline, "
                                      "and it must be the first transform")
-                if isinstance(t, CenterCrop) and any(isinstance(g, CenterCrop) for g in geometry):
-                    raise ValueError("one CenterCrop per pipeline")
                 geometry.append(t)
             elif kind == "flip":
                 if user_neighbourhood:
@@ -159,7 +170,8 @@ class Compose:
                 self._stages[-1].append(t)
             elif kind == "neighbourhood":
                 self._neighbourhood.append(t)
-                self._stages.append([])
+                # its _post lines (a container's colour ops) start the next pass's chain
+                self._stages.append([t])
                 user_neighbourhood |= isinstance(_unwrap(t)[1], NeighbourhoodOp)
             elif kind == "normalize":
                 if i != len(self.transforms) - 1:
@@ -167,29 +179,42 @@ class Compose:
                 self._normalize = t     # type: ignore[assignment]
             else:
                 raise TypeError(f"{t!r}: unknown transform kind {kind!r}")
-        self._geometry = geometry
-        self._size: tuple[int, int] | None = None
-        for g in geometry:
-            if isinstance(g, (RandomResizedCrop, CenterCrop)):
-                self._size = g.size
-            elif isinstance(g, Resize):
-                self._size = None if g.shorter else g.size
-        if geometry and self._size is None:
+        self._resample = geometry[0] if geometry and getattr(geometry[0], "_resamples",
+                                                             False) else None
+        self._windows: list[_Window] = [g for g in geometry if isinstance(g, _Window)]
+        self._size = self._chain_size(None)
+        self._check_per_image = any(isinstance(w, RandomCrop) or w.padding_mode != "constant"
+                                    for w in self._windows)
+        if isinstance(self._resample, Resize) and self._resample.shorter and self._size is None:
             raise ValueError("Resize(int) keeps each image's aspect ratio, so the images end up "
-                             "different sizes: follow it with CenterCrop, or give Resize a "
-                             "(height, width)")
-        self._antialias = all(getattr(g, "antialias", True) for g in geometry)
-        self._bicubic = any(getattr(g, "interpolation", "") == "bicubic" for g in geometry)
+                             "different sizes: follow it with CenterCrop or RandomCrop, or give "
+                             "Resize a (height, width)")
+        self._antialias = getattr(self._resample, "antialias", True)
+        self._bicubic = getattr(self._resample, "interpolation", "") == "bicubic"
         if self._size:
             self._check_blur(self._size)
 
         b = Binding()
-        b.nparams = _GEO_SLOTS
+        b.nparams = _RESAMPLE_SLOTS
+        for w in self._windows:
+            b.win[id(w)] = b.nparams
+            b.nparams += _WINDOW_SLOTS
         for t in self.transforms:
             if t._kind == "neighbourhood":
                 b.stage += 1
             b.bind(t)
         self._b = b
+
+    def _chain_size(self, hw: tuple[int, int] | None) -> tuple[int, int] | None:
+        """Output (H, W) for an input of size hw; None when it depends on the image."""
+        r = self._resample
+        if isinstance(r, RandomResizedCrop):
+            hw = r.size
+        elif isinstance(r, Resize):
+            hw = (None if hw is None else _resize_shorter(hw, r.size[0])) if r.shorter else r.size
+        for w in self._windows:
+            hw = w._size_after(hw)
+        return hw
 
     def _check_blur(self, size: tuple[int, int]) -> None:
         """torchvision's reflect padding needs each blur radius below the image size."""
@@ -237,34 +262,55 @@ class Compose:
                 "    int H = meta[uint2(0, b)];",
                 "    int W = meta[uint2(1, b)];",
                 "    int gl = 0; int gt = 0; int gw = W; int gh = H;",
-                "    int RW = W; int RH = H; int gcx = 0; int gcy = 0;"]
-        for geo in self._geometry:
-            src += [f"    {ln}" for ln in geo._geometry("sb" if geo.same_on_batch else "s")]  # type: ignore[attr-defined]
-        for i, name in enumerate(("gl", "gt", "gw", "gh", "RW", "RH", "gcx", "gcy")):
+                "    int RW = W; int RH = H;"]
+        r = self._resample
+        if r is not None:
+            src += [f"    {ln}" for ln in r._geometry("sb" if r.same_on_batch else "s")]  # type: ignore[attr-defined]
+        for i, name in enumerate(("gl", "gt", "gw", "gh", "RW", "RH")):
             src.append(f"    p[uint2({b.geo + i}, b)] = float({name});")
+        src.append("    int CW = RW; int CH = RH; int wox = 0; int woy = 0;")
+        for w in self._windows:
+            k = b.win[id(w)]
+            rng = "sb" if w.same_on_batch else "s"
+            src += [f"    p[uint2({k + 2}, b)] = float(CW); p[uint2({k + 3}, b)] = float(CH);",
+                    "    {", *[f"        {ln}" for ln in w._window(rng)], "    }",
+                    f"    p[uint2({k}, b)] = float(wox); p[uint2({k + 1}, b)] = float(woy);"]
         for t in _walk(self.transforms):
             src += [f"    {ln}" for ln in t._sample(b, "sb" if t.same_on_batch else "s")]
         src += ["}", ""]
 
-        # pass 0 input: flips, crop offset, resample
+        # pass 0 input: flips, window ops (last first), resample
         g = b.geo
-        flips = [f"({P(b.k(f))} > 0.5)" for f in self._flips]
         src += ["float4 input_0<S : IImageSource>(S src, Tensor<float, 2> p, int b, int x, int y,",
                 "                                 int OW, int OH)",
                 "{"]
-        if flips:
-            src.append(f"    if ({' != '.join(flips)}) x = OW - 1 - x;")
-        src += [f"    int RW = int({P(g + 4)}); int RH = int({P(g + 5)});",
-                f"    int rx = x + int({P(g + 6)}); int ry = y + int({P(g + 7)});",
-                "    if (rx < 0 || ry < 0 || rx >= RW || ry >= RH) return float4(0.0);",
-                f"    return resample(src, int({P(g)}), int({P(g + 1)}), int({P(g + 2)}), "
-                f"int({P(g + 3)}), rx, ry, RW, RH, {int(self._antialias)}, {int(self._bicubic)});",
+        for axis, coord, size in ((0, "x", "OW"), (1, "y", "OH")):
+            flips = [f"({P(b.k(f))} > 0.5)" for f in self._flips if f._axis == axis]  # type: ignore[attr-defined]
+            if flips:
+                src.append(f"    if ({' != '.join(flips)}) {coord} = {size} - 1 - {coord};")
+        src.append("    int rx = x; int ry = y;")
+        for w in reversed(self._windows):
+            k = b.win[id(w)]
+            src += [f"    rx += int({P(k)}); ry += int({P(k + 1)});",
+                    f"    {{ int Wp = int({P(k + 2)}); int Hp = int({P(k + 3)});"]
+            if w.padding_mode == "constant":
+                f0, f1, f2 = (lit(v) for v in w.fill)
+                src.append(f"      if (rx < 0 || ry < 0 || rx >= Wp || ry >= Hp) "
+                           f"return float4({f0}, {f1}, {f2}, 0.0); }}")
+            else:
+                fn = {"edge": "clamp_index", "reflect": "reflect",
+                      "symmetric": "symmetric"}[w.padding_mode]
+                src.append(f"      rx = {fn}(rx, Wp); ry = {fn}(ry, Hp); }}")
+        src += [f"    return resample(src, int({P(g)}), int({P(g + 1)}), int({P(g + 2)}), "
+                f"int({P(g + 3)}), rx, ry, int({P(g + 4)}), int({P(g + 5)}), "
+                f"{int(self._antialias)}, {int(self._bicubic)});",
                 "}", ""]
 
         # later pass inputs and pre-passes
         for s, t in enumerate(self._neighbourhood, start=1):
             gates, op = _unwrap(t)
-            gate = [f"    if (!({P(b.k(r))} > 0.5)) return load_mid(src, x, y, b);" for r in gates]
+            gate = [f"    if (!({r._gate(b, c)})) return load_mid(src, x, y, b);"  # type: ignore[attr-defined]
+                    for r, c in gates]
             head = "(Tensor<Mid, 4> src, Tensor<float, 2> p, int b, int x, int y, int OW, int OH)"
             pre = op._pre(b)    # type: ignore[attr-defined]
             if pre is not None:
@@ -283,7 +329,8 @@ class Compose:
         for s, stage in enumerate(self._stages):
             src += [f"float4 chain_{s}(float4 c, Tensor<float, 2> p, Tensor<float, 2> st, int b,"
                     " int upto)", "{"]
-            src += [f"    {ln}" for t in stage for ln in t._apply(b)]
+            src += [f"    {ln}" for t in stage
+                    for ln in (t._post(b) if t._kind == "neighbourhood" else t._apply(b))]
             src += ["    return c;", "}", ""]
 
         # pass kernels and statistic pre-passes
@@ -332,12 +379,19 @@ class Compose:
         from . import _runtime
 
         table = _runtime.image_table(images, layout)
-        size = self._size or table.size
-        if size is None and table.count == 0:
-            raise ValueError("no images: with no geometric transform the output size comes "
-                             "from the images, so an empty list has none")
-        if size is None:
-            raise ValueError("with no geometric transform, all images must have the same size")
+        size = self._size
+        if size is None or self._check_per_image:
+            # RandomCrop sizes and mirror paddings are checked per image size
+            sizes = {self._chain_size(hw) for hw in set(table.dims)}
+            if size is None and not table.dims:
+                raise ValueError("no images: the output size comes from the images (no "
+                                 "fixed-size geometric transform), so an empty list has none")
+            if size is None and len(sizes) > 1:
+                raise ValueError("the output size comes from the images (no fixed-size "
+                                 "geometric transform), so all images must end up the same "
+                                 "size")
+            size = size or next(iter(sizes))
+        assert size is not None     # an image size always gives a concrete output size
         if not self._size:
             self._check_blur(size)
         OH, OW = size

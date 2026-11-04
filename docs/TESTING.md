@@ -12,7 +12,11 @@ output and 4e-3 for float16 output, in normalized units.
 |---|---|
 | RandomResizedCrop | reference: recipes, non-square size, custom scale/ratio, `antialias=False`, fallback sizes; bicubic with and without antialias, small scale, in a full recipe |
 | Resize | reference: `(h, w)`, shorter side + CenterCrop, `antialias=False`; bicubic upscale and downscale with and without antialias |
-| CenterCrop | reference: alone, after Resize, larger than the image (zero padding) |
+| CenterCrop | reference: alone, after Resize, larger than the image (zero padding), after Pad |
+| RandomCrop | reference on 64 CIFAR-sized images (24-40 px), so padding shows in most crops: CIFAR (padding 4), reflect, symmetric, edge and reflect with `pad_if_needed`, per-side padding with RGB fill, three padding modes chained, two RandomCrops, after Resize + Pad and RandomResizedCrop + Pad; offsets reach the padding on all four sides; per-image positions and `same_on_batch`; too-large crops and too-wide mirror padding raise; mirror padding at torchvision's limits |
+| Pad | reference: constant fill on a batch, reflect before CenterCrop, edge before RandomCrop, uneven padding before flips |
+| RandomVerticalFlip | reference: `p=1` alone and after uneven padding, random with RandomCrop and RandomHorizontalFlip |
+| RandomChoice | reference: ThreeAugment choice (grayscale, solarize, blur), contrast or blur (contrast mean after the choice), weighted, inside RandomApply, nested RandomChoice; sampled frequencies follow `p`; `same_on_batch` gives one choice |
 | RandomHorizontalFlip | reference: `p=1`, two flips |
 | ColorJitter | reference: each factor alone, all four with random order, inside RandomApply, after a blur (mean of the blurred image) |
 | RandomApply | reference: colour ops, one blur |
@@ -93,3 +97,8 @@ validation of newer code.
   through the int16 view on SlangPy 0.42.0 and 0.43.1: identical to
   `.to(torch.bfloat16)`. Batch 256 at 224x224: ImageNet recipe 1.74 ms for
   float16 and bfloat16, 1.76 ms for float32; SimCLR 3.11, 3.12 and 3.31 ms.
+- 2026-11-04, bicubic resizing, RandomCrop/Pad/RandomVerticalFlip/
+  RandomChoice and the review fixes, same host and stack (box scripts'
+  `CUDA_PATH`): 145 passed. Benchmark: header of
+  `benchmarks/compare_pipelines.py`, raw data in
+  `benchmarks/results/rtx_pro_4500_2026-11-04.json`.

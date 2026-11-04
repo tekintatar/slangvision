@@ -32,9 +32,9 @@
 # raw data in benchmarks/results/rtx_pro_4500_2026-11-04.json):
 #
 #   recipe     slangvision   torchvision batch   torchvision per image   Kornia fp16
-#   imagenet   1.71 (1.50)   20.2 (20.0)         228 (35.8)              19.9 (14.0)
-#   eval       0.86 (0.66)   5.63 (5.83)         27.8 (7.64)             -
-#   simclr     3.09 (2.87)   20.9 (19.9)         208 (40.6)              29.7 (23.8)
+#   imagenet   1.71 (1.47)   19.9 (20.1)         202 (35.7)              19.2 (14.0)
+#   eval       0.89 (0.67)   5.61 (5.85)         28.6 (7.64)             -
+#   simclr     3.16 (2.89)   20.5 (27.1)         230 (41.7)              30.3 (23.8)
 #
 # Honest read:
 # - torchvision's batch mode draws ONE random setting for the whole batch, so
@@ -170,7 +170,7 @@ def main() -> None:
             g, kernels = gpu_ms(fn, x, iters=1 if loop else 5)
             row = {"recipe": recipe, "method": name, "wall_ms": round(ms, 2),
                    "gpu_ms": round(g, 2), "kernels": kernels,
-                   "images_per_s": round(args.batch / ms * 1e3)}
+                   "images_per_s": round(len(x) / ms * 1e3)}
             rows.append(row)
             print(f"{recipe:9} {name:32} {ms:9.2f} ms  gpu {g:8.2f} ms  {kernels:6} kernels")
     if args.json:

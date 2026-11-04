@@ -117,6 +117,7 @@ class Binding:
         self.nstats = 0
         self.stage = 0
         self.geo = 0            # Compose reserves the first slots for geometry
+        self.win: dict[int, int] = {}   # window op -> its first geometry slot
         self.stats_stage: list[int] = []
         self._k: dict[int, int] = {}
         self._st: dict[int, list[int]] = {}
@@ -168,6 +169,11 @@ class Transform:
         return []
 
     def _apply(self, b: Binding) -> list[str]:
+        return []
+
+    def _post(self, b: Binding) -> list[str]:
+        """For an op that reads neighbouring pixels: lines to run at the start
+        of the next pass's colour chain (a container's colour-op parts)."""
         return []
 
     def __repr__(self) -> str:

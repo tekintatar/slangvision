@@ -89,6 +89,110 @@ def test_geometry_matches_torchvision(transforms, images):
     _check(transforms, images)
 
 
+@pytest.fixture(scope="module")
+def small():
+    """64 CIFAR-sized images of 24-40 px, so padding shows up in most crops."""
+    g = torch.Generator(device="cuda").manual_seed(2)
+    sizes = torch.randint(24, 41, (64, 2), generator=torch.Generator().manual_seed(2))
+    return [_image(int(h), int(w), g) for h, w in sizes]
+
+
+@pytest.mark.parametrize("transforms", [
+    [A.RandomCrop(32, padding=4)],                                      # the CIFAR recipe
+    [A.RandomCrop(32, padding=4, padding_mode="reflect"), A.RandomHorizontalFlip()],
+    [A.RandomCrop((30, 34), padding=(5, 3), padding_mode="symmetric")],
+    [A.RandomCrop(48, pad_if_needed=True, padding_mode="edge")],         # larger than every image
+    [A.RandomCrop(48, padding=2, pad_if_needed=True, padding_mode="reflect")],
+    [A.RandomCrop(28, padding=(1, 2, 3, 4), fill=(0.2, 0.5, 0.9))],
+    [A.Pad((3, 7), padding_mode="reflect"), A.CenterCrop(30)],
+    [A.Pad(3, padding_mode="edge"), A.RandomCrop(36, padding=6, padding_mode="reflect"),
+     A.CenterCrop(40)],                                                  # three padding modes
+    [A.RandomCrop(36, padding=6), A.RandomCrop(28, padding=3, padding_mode="symmetric")],
+    [A.Pad((1, 2, 3, 4), fill=0.7), A.CenterCrop(30), A.RandomVerticalFlip(p=1.0),
+     A.RandomHorizontalFlip(p=1.0)],                                     # flips after uneven padding
+    [A.Resize(40), A.Pad(5, padding_mode="edge"), A.RandomCrop(36)],
+    [A.RandomResizedCrop(32), A.Pad(4), A.RandomCrop(32)],
+    [A.RandomCrop(24), A.RandomVerticalFlip(), A.RandomHorizontalFlip()],
+], ids=lambda ts: "+".join(type(t).__name__ for t in ts))
+def test_crops_pads_and_flips_match_torchvision(transforms, small):
+    _check(transforms, small)
+
+
+def test_crop_positions_reach_the_padding_on_every_side(small):
+    """The CIFAR recipe draws offsets into the padding on all four sides."""
+    crop = A.RandomCrop(32, padding=4)
+    pipe = A.Compose([crop])
+    torch.manual_seed(0)
+    _, params = pipe._run(small, "chw")
+    k = pipe._b.win[id(crop)]
+    wox, woy, cw, ch = (params[:, k + i] for i in range(4))
+    assert (wox < 0).any() and (woy < 0).any()
+    assert (wox + 32 > cw).any() and (woy + 32 > ch).any()
+
+
+def test_pad_alone_keeps_a_same_size_batch(batch):
+    _check([A.Pad(6, fill=0.5)], batch)
+    _check([A.RandomVerticalFlip(p=1.0)], batch)
+
+
+@pytest.mark.parametrize("transforms", [
+    # DeiT III's ThreeAugment choice
+    [A.RandomCrop(32, padding=4), A.RandomChoice([A.RandomGrayscale(p=1.0),
+                                                  A.RandomSolarize(0.5, p=1.0),
+                                                  A.GaussianBlur(9)])],
+    [A.RandomCrop(32), A.RandomChoice([A.ColorJitter(contrast=(0.2, 1.8)), A.GaussianBlur(5)])],
+    [A.RandomCrop(32), A.RandomChoice([A.ColorJitter(contrast=(0.2, 1.8)),
+                                       A.RandomGrayscale(p=1.0)], p=[3, 1])],
+    [A.RandomCrop(32), A.RandomApply([A.RandomChoice([A.RandomGrayscale(p=1.0),
+                                                      A.GaussianBlur(5)])], p=0.7)],
+    [A.RandomCrop(32), A.RandomChoice([A.RandomChoice([A.RandomGrayscale(p=1.0),
+                                                       A.GaussianBlur(5)]),
+                                       A.RandomSolarize(0.5, p=1.0)])],
+], ids=lambda ts: "+".join(type(t).__name__ for t in ts))
+def test_random_choice_matches_torchvision(transforms, small):
+    _check(transforms, [im for im in small if min(im.shape[-2:]) >= 32])
+
+
+def test_random_crop_and_choice_draw_per_image_and_respect_same_on_batch(batch):
+    # one image size: a shared draw then gives every image the same offset
+    def first_slots(t, **kw):
+        pipe = A.Compose([A.RandomCrop(24, **kw), t] if t else [A.RandomCrop(24, **kw)])
+        torch.manual_seed(0)
+        _, params = pipe._run(torch.cat([batch] * 8), "chw")
+        return params
+
+    assert first_slots(None, padding=8)[:, 6].unique().numel() > 1
+    shared = first_slots(None, padding=8, same_on_batch=True)
+    assert shared[:, 6].unique().numel() == 1 and shared[:, 7].unique().numel() == 1
+    choice = A.RandomChoice([A.RandomGrayscale(p=1.0), A.GaussianBlur(5)], same_on_batch=True)
+    assert first_slots(choice, padding=8)[:, 10].unique().numel() == 1
+
+
+def test_random_choice_follows_its_weights():
+    pipe = A.Compose([A.RandomChoice([A.RandomGrayscale(p=1.0), A.RandomSolarize(0.5, p=1.0),
+                                      A.RandomGrayscale(p=1.0)], p=[1, 2, 1])])
+    torch.manual_seed(0)
+    _, params = pipe._run(torch.zeros(4096, 3, 16, 16, dtype=torch.uint8, device="cuda"), "chw")
+    counts = torch.bincount(params[:, -1].long(), minlength=3).float() / 4096
+    assert torch.allclose(counts, torch.tensor([0.25, 0.5, 0.25], device="cuda"), atol=0.03)
+
+
+@pytest.mark.parametrize("transforms, match", [
+    ([A.RandomCrop(1000)], "larger than the image"),
+    ([A.Pad(30, padding_mode="reflect")], "reflect padding"),             # wider than 23x17
+    ([A.RandomCrop(200, pad_if_needed=True, padding_mode="symmetric")], "symmetric padding"),
+])
+def test_per_image_size_errors(transforms, match, images):
+    with pytest.raises(ValueError, match=match):
+        A.Compose(transforms)(images)
+
+
+def test_mirror_padding_equal_to_the_limit_matches_torchvision(batch):
+    # torchvision's limits: reflect padding up to size - 1, symmetric up to size
+    _check([A.Pad((127, 95), padding_mode="reflect"), A.CenterCrop((96, 128))], batch)
+    _check([A.Pad((128, 96), padding_mode="symmetric"), A.CenterCrop((96, 128))], batch)
+
+
 @pytest.mark.parametrize("transforms", [
     [A.RandomResizedCrop(64, interpolation="bicubic")],
     [A.RandomResizedCrop((48, 80), scale=(0.02, 0.3), interpolation="bicubic")],
@@ -257,6 +361,8 @@ def test_output_dtype_shape_and_empty_input(images):
     assert bf(images).dtype == torch.bfloat16 and bf([]).dtype == torch.bfloat16
     empty = torch.empty(0, 3, 32, 32, dtype=torch.uint8, device="cuda")
     assert A.Compose([A.RandomResizedCrop(8)])(empty).shape == (0, 3, 8, 8)
+    assert A.Compose([A.ColorJitter(0.4)])(empty).shape == (0, 3, 32, 32)
+    assert A.Compose([A.Pad(4)])(empty).shape == (0, 3, 40, 40)
 
 
 @pytest.mark.parametrize("bad, match", [

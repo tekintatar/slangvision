@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Added
+- `RandomCrop` (padding, `pad_if_needed`, `fill`, constant/edge/reflect/
+  symmetric padding), `Pad`, `RandomVerticalFlip` and `RandomChoice`
+  (colour ops and at most one blur, also nested in RandomApply; covers DeiT
+  III's ThreeAugment choice of grayscale, solarize or blur). After an
+  optional resize, any sequence of `Pad`, `CenterCrop` and `RandomCrop`
+  composes as torchvision applies them; reflect and symmetric padding wider
+  than an image raise `ValueError`, as in torchvision. The CIFAR recipe
+  `RandomCrop(32, padding=4)` works.
 - `interpolation="bicubic"` for RandomResizedCrop and Resize (string or
   torchvision's `InterpolationMode`), matching torchvision's float bicubic
   with and without antialias. Used by DeiT, ConvNeXt, MAE, DINO, OpenCLIP

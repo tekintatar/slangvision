@@ -70,6 +70,16 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
         return F.resize(img, size, antialias=t.antialias, interpolation=_MODES[t.interpolation])
     if isinstance(t, T.CenterCrop):
         return F.center_crop(img, list(t.size))
+    if isinstance(t, T.Pad):
+        return _pad(F, img, list(t.padding), t)
+    if isinstance(t, T.RandomCrop):
+        k = b.win[id(t)]
+        left, top, right, bottom = t._padded((img.shape[-2], img.shape[-1]))
+        if any((left, top, right, bottom)):
+            img = _pad(F, img, [left, top, right, bottom], t)
+        return F.crop(img, int(row[k + 1]) + top, int(row[k]) + left, *t.size)
+    if isinstance(t, T.RandomVerticalFlip):
+        return F.vertical_flip(img) if row[b.k(t)] > 0.5 else img
     if isinstance(t, T.RandomHorizontalFlip):
         return F.horizontal_flip(img) if row[b.k(t)] > 0.5 else img
     if isinstance(t, T.ColorJitter):
@@ -84,6 +94,8 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
     if isinstance(t, T.GaussianBlur):
         s = row[b.k(t)]
         return F.gaussian_blur(img, list(t.kernel_size), [s, s])
+    if isinstance(t, T.RandomChoice):
+        return _reference(t.transforms[int(row[b.k(t)])], b, img, row)
     if isinstance(t, T.RandomApply):
         if row[b.k(t)] > 0.5:
             for child in t.transforms:
@@ -101,3 +113,10 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
             return F.solarize(img, values["threshold"])
         return t.reference(img, **values)
     raise TypeError(f"no torch reference for {type(t).__name__}")
+
+
+def _pad(F: Any, img: "torch.Tensor", padding: list[int], t: Any) -> "torch.Tensor":
+    """torchvision's pad (padding as left, top, right, bottom) with t's mode and fill."""
+    if t.padding_mode == "constant":
+        return F.pad(img, padding, fill=list(t.fill), padding_mode="constant")
+    return F.pad(img, padding, padding_mode=t.padding_mode)

@@ -1,5 +1,6 @@
 // shaders/geometry.slang — torchvision's resampling and crop geometry:
-// RandomResizedCrop, Resize, CenterCrop; bilinear and bicubic filters.
+// RandomResizedCrop and Resize (bilinear and bicubic filters), CenterCrop,
+// RandomCrop and Pad (padding modes).
 
 // PyTorch's resampling filters (aten UpSample kernels). Antialias filters:
 // a triangle for bilinear and Keys' cubic with a = -0.5 for bicubic, both
@@ -27,6 +28,8 @@ float cubic_far(float x) { return ((-0.75 * x + 3.75) * x - 6.0) * x + 3.0; }   
 float4 resample<S : IImageSource>(S src, int left, int top, int cw, int ch,
                                   int ox, int oy, int OW, int OH, int aa, int bicubic)
 {
+    if (cw == OW && ch == OH)       // no scaling: every filter reduces to a copy
+        return src.load(left + ox, top + oy) * (1.0 / 255.0);
     float sx = float(cw) / float(OW);
     float sy = float(ch) / float(OH);
     if (aa == 0 && bicubic == 0)
@@ -95,6 +98,19 @@ float4 resample<S : IImageSource>(S src, int left, int top, int cw, int ch,
         acc += wy * row;
     }
     return acc * (1.0 / (255.0 * wxsum * wysum));
+}
+
+// Out-of-image indices for torchvision's padding modes ("reflect" is in
+// neighbourhood.slang): edge repeats the border pixel, symmetric mirrors
+// including it. Compose rejects mirror padding wider than the image, as
+// torchvision does; the clamp only keeps indices in bounds.
+int clamp_index(int i, int n) { return clamp(i, 0, n - 1); }
+
+int symmetric(int i, int n)
+{
+    if (i < 0) i = -i - 1;
+    if (i >= n) i = 2 * n - 1 - i;
+    return clamp(i, 0, n - 1);
 }
 
 // torchvision's centre-crop offset: int(round((size - crop) / 2.0)), where

@@ -21,8 +21,9 @@ class Box(A.NeighbourhoodOp):
     ([A.RandomHorizontalFlip(), A.CenterCrop(224)], "must come first"),
     ([A.CenterCrop(256), A.Resize(224)], "one Resize or RandomResizedCrop"),
     ([A.RandomResizedCrop(224), A.Resize(200)], "one Resize or RandomResizedCrop"),
-    ([A.Resize(256), A.CenterCrop(240), A.CenterCrop(224)], "one CenterCrop"),
-    ([A.Resize(256)], "follow it with CenterCrop"),
+    ([A.RandomResizedCrop(16), A.RandomCrop(32)], "larger than the image"),
+    ([A.Resize(256), A.Pad(4)], "follow it with CenterCrop or RandomCrop"),
+    ([A.Resize(256)], "follow it with CenterCrop or RandomCrop"),
     ([A.Normalize(MEAN, STD), A.ColorJitter(0.4)], "Normalize must be the last"),
     ([A.RandomResizedCrop(64), Box(), A.RandomHorizontalFlip()], "before your NeighbourhoodOps"),
     ([A.RandomResizedCrop(8), A.GaussianBlur(23)], "larger than its radius"),
@@ -42,6 +43,15 @@ def test_valid_pipelines_build_without_a_gpu():
     A.Compose([A.Resize((200, 300))], dtype="float32")
     A.Compose([A.Resize((200, 300))], dtype="bfloat16")
     A.Compose([A.ColorJitter(0.4)])
+    cifar = A.Compose([A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(), A.Normalize(MEAN, STD)])
+    three = A.Compose([A.Resize(224, interpolation="bicubic"),
+                       A.RandomCrop(224, padding=4, padding_mode="reflect"),
+                       A.RandomHorizontalFlip(),
+                       A.RandomChoice([A.RandomGrayscale(p=1.0), A.RandomSolarize(0.5, p=1.0),
+                                       A.GaussianBlur(13)]),
+                       A.ColorJitter(0.3, 0.3, 0.3), A.Normalize(MEAN, STD)])
+    assert "sample_params" in cifar.source and "stage_1" in three.source
+    assert A.Pad(4, fill=None).fill == (0.0, 0.0, 0.0)
 
 
 @pytest.mark.parametrize("make, match", [
@@ -69,6 +79,17 @@ def test_valid_pipelines_build_without_a_gpu():
     (lambda: A.Choice([]), "at least one"),
     (lambda: A.GaussianBlur(3, sigma=[1.0]), "sigma"),
     (lambda: A.RandomResizedCrop(8, interpolation="nearest"), "interpolation"),
+    (lambda: A.RandomCrop(32, padding=4, fill=255), "0-1 scale"),
+    (lambda: A.Pad(4, padding_mode="wrap"), "padding_mode"),
+    (lambda: A.Pad((1, 2, 3)), "padding"),
+    (lambda: A.Pad(-1), "non-negative"),
+    (lambda: A.Pad("4"), "padding"),
+    (lambda: A.Pad([2.7]), "padding"),
+    (lambda: A.RandomChoice([]), "at least one"),
+    (lambda: A.RandomChoice([A.RandomGrayscale()], p=[1, 2]), "one non-negative weight"),
+    (lambda: A.RandomChoice([A.GaussianBlur(3), A.GaussianBlur(5)]), "at most one"),
+    (lambda: A.RandomChoice([A.RandomVerticalFlip()]), "flips"),
+    (lambda: A.Compose([A.RandomResizedCrop(16), A.Pad(16, padding_mode="reflect")]), "reflect padding"),
     (lambda: A.Resize(8, interpolation="lanczos"), "interpolation"),
     (lambda: A.GaussianBlur((3, 5, 7)), "kernel_size"),
     (lambda: A.RandomApply([A.RandomHorizontalFlip()]), "flips"),
