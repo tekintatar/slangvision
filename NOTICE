@@ -1,0 +1,7 @@
+SlangVision
+Copyright 2026 Tekin Tatar
+
+This product is built on Slang (https://shader-slang.org/) and slangpy
+(https://github.com/shader-slang/slangpy), both licensed under the
+Apache License 2.0. SlangVision is not affiliated with the Slang project
+or Khronos.

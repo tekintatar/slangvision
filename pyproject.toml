@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "slangvision"
+version = "0.0.1"
+description = "GPU training augmentation for PyTorch, written in Slang (under development)."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.10,<3.14"
+authors = [{ name = "Tekin Tatar" }]
+keywords = ["data-augmentation", "computer-vision", "gpu", "slang", "slangpy", "cuda", "pytorch"]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/slangvision"]
