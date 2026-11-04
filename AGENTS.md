@@ -64,6 +64,12 @@ notes (interpreter paths, GPU hosts, identities) in your own untracked
 - With DALI, `slangpy` must be imported before DALI builds a pipeline, or
   SlangPy segfaults creating its CUDA device (DALI 2.4, SlangPy 0.42).
 - SlangPy devices are thread-affine: pipelines run from one thread.
+- bfloat16: Slang compiles `BFloat16`, but SlangPy's torch bridge rejects
+  torch.bfloat16 tensors (no bfloat16 in its ScalarType/DataType tables, 0.42
+  and 0.43.1). The final pass therefore writes `bf16_bits()` (core.slang,
+  round to nearest even like torch) into `out.view(torch.int16)`;
+  intermediates stay float16. Switch to `RWTensor<BFloat16, 4>` once SlangPy
+  maps torch.bfloat16.
 - NVRTC setup (`_cuda.py`): SlangPy's device layer opens
   `$CUDA_PATH/lib/libnvrtc.so`, Slang's compiler `dlopen("libnvrtc.so")`
   (searched in LD_LIBRARY_PATH, the system cache and SlangPy's RUNPATH,

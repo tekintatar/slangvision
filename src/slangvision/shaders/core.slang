@@ -20,6 +20,17 @@ float gray(float4 c) { return 0.2989 * c.x + 0.587 * c.y + 0.114 * c.z; }
 
 float4 clamp01(float4 c) { return clamp(c, 0.0, 1.0); }
 
+// The bfloat16 bit pattern of f, rounded to nearest even like torch's
+// .to(torch.bfloat16); NaN stays NaN.
+int16_t bf16_bits(float f)
+{
+    uint u = asuint(f);
+    if ((u & 0x7fffffffu) > 0x7f800000u)
+        return int16_t(0x7fc0);
+    u += 0x7fffu + ((u >> 16) & 1u);
+    return int16_t(u >> 16);
+}
+
 // ---------------------------------------------------------------- random
 // Counter-based: every value is a function of (call seed, image, draw).
 uint pcg(uint v)

@@ -214,11 +214,31 @@ def test_batch_and_lists_of_either_layout_agree(batch):
         assert torch.equal(pipe._run(images, layout, params=params)[0], out)
 
 
+@pytest.mark.parametrize("name", ["imagenet", "simclr"])
+def test_bfloat16_output_is_torchvision_rounded(name, images):
+    """bfloat16 output is within one bfloat16 step of the float32 reference:
+    rounded like torch, except where the two land on either side of a rounding
+    edge. Pipelines with several passes keep float16 between them, which
+    moves values by up to about 1e-3 after Normalize, so they cross edges
+    more often."""
+    pipe = A.Compose(RECIPES[name], dtype=torch.bfloat16)
+    torch.manual_seed(0)
+    out, params = pipe._run(images, "chw")
+    assert out.dtype == torch.bfloat16
+    ref = _replay(pipe, images, params, "chw")
+    step = torch.exp2(torch.floor(torch.log2(ref.abs().clamp_min(2**-14))) - 7)
+    assert ((out.float() - ref).abs() <= step + 2e-3).all()
+    if len(pipe._stages) == 1:      # no float16 intermediates: torch's rounding nearly always
+        assert ((out.float() - ref).abs() <= step / 2 + 1e-6).float().mean() > 0.95
+
+
 def test_output_dtype_shape_and_empty_input(images):
     out = A.Compose([A.RandomResizedCrop((40, 56))])(images)
     assert out.dtype == torch.float16 and out.shape == (len(images), 3, 40, 56)
     assert out.is_contiguous() and 0.0 <= out.min() and out.max() <= 1.0
     assert A.Compose([A.RandomResizedCrop(8)], dtype=torch.float32)([]).shape == (0, 3, 8, 8)
+    bf = A.Compose([A.RandomResizedCrop(8)], dtype=torch.bfloat16)
+    assert bf(images).dtype == torch.bfloat16 and bf([]).dtype == torch.bfloat16
     empty = torch.empty(0, 3, 32, 32, dtype=torch.uint8, device="cuda")
     assert A.Compose([A.RandomResizedCrop(8)])(empty).shape == (0, 3, 8, 8)
 

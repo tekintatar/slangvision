@@ -20,6 +20,7 @@ train = A.Compose([
 ])
 images = torch.randint(0, 256, (64, 3, 480, 640), dtype=torch.uint8, device="cuda")
 x = train(images)   # (64, 3, 224, 224) float16; a list of decoded images also works
+# Compose(..., dtype=torch.bfloat16) or torch.float32 for other output types
 ```
 
 - **Fast.** An ImageNet augmentation batch of 256 takes 1.3 ms on an H100,

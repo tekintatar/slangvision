@@ -20,6 +20,7 @@ output and 4e-3 for float16 output, in normalized units.
 | GaussianBlur | reference: square and `(kx, ky)` kernels, fixed and random sigma, two blurs in one pipeline |
 | RandomSolarize | reference off the threshold; values exactly on it may differ (checked to be on it) |
 | Normalize | reference (in every recipe) |
+| bfloat16 output | ImageNet and SimCLR recipes within one bfloat16 step of the float32 reference; the one-pass ImageNet recipe rounds like torch for more than 95% of values |
 | ColorOp, NeighbourhoodOp | reference: user-defined gamma and box blur (reflect, clamp), helper-name isolation, compile-error message |
 
 Also on CUDA: batch tensor, CHW list, HWC list and a non-contiguous HWC view
@@ -86,3 +87,9 @@ validation of newer code.
     automatic-link version) and a bf16 training step and `torch.compile`
     still ran.
   - With the box scripts' own `CUDA_PATH`: 95 passed and no link was made.
+- 2026-11-04, bfloat16 output, same host, torch 2.13.0, SlangPy 0.42.0 (the
+  box scripts' own `CUDA_PATH`): 97 passed. A separate check wrote 4,194,304
+  values (including rounding ties, ±inf, NaN and values near the maximum)
+  through the int16 view on SlangPy 0.42.0 and 0.43.1: identical to
+  `.to(torch.bfloat16)`. Batch 256 at 224x224: ImageNet recipe 1.74 ms for
+  float16 and bfloat16, 1.76 ms for float32; SimCLR 3.11, 3.12 and 3.31 ms.

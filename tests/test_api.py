@@ -40,6 +40,7 @@ def test_valid_pipelines_build_without_a_gpu():
                A.RandomSolarize(0.5, p=0.2), A.Normalize(MEAN, STD)])
     A.Compose([A.Resize(256), A.CenterCrop(224), A.Normalize(MEAN, STD)])
     A.Compose([A.Resize((200, 300))], dtype="float32")
+    A.Compose([A.Resize((200, 300))], dtype="bfloat16")
     A.Compose([A.ColorJitter(0.4)])
 
 

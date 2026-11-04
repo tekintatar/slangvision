@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `Compose(..., dtype=torch.bfloat16)`: bfloat16 output, rounded like
+  `.to(torch.bfloat16)`, at the same speed as float16. SlangPy's torch
+  bridge does not take bfloat16 tensors yet, so the kernels write bfloat16
+  bits through an int16 view of the output.
+
 ## 0.1.0 — 2026-11-04
 
 ### Added

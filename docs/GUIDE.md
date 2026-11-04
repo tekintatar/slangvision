@@ -87,9 +87,11 @@ Pipeline rules, checked when you build the `Compose`:
 - Each transform object appears once; create a second one to use it twice.
 - `Normalize`, if present, is last. Without it the output is in [0, 1].
 
-`Compose(transforms, dtype=torch.float16)`; `torch.float32` is the other
-choice. The output is a contiguous `(B, 3, H, W)` tensor; for another dtype
-or `channels_last`, call `.to(...)` on it.
+`Compose(transforms, dtype=torch.float16)` is the default; `torch.bfloat16`
+(for models trained in bfloat16, at the same speed as float16) and
+`torch.float32` are the other choices. Passes between blurs and the final
+output keep float16 (float32 for float32 output). The output is a
+contiguous `(B, 3, H, W)` tensor; for `channels_last`, call `.to(...)` on it.
 
 ## Inputs and decoders
 
@@ -239,8 +241,9 @@ imports this module. `pipe.source` shows the generated Slang.
 
 | | difference from torchvision's float functionals |
 |---|---|
-| float32 output | about 1e-5 (float rounding) |
+| float32 output | about 1e-5 (float rounding), measured after `Normalize` (1e-5 to 2e-5 before it) |
 | float16 output | fp16 rounding of the output, up to about 2e-3 at normalized values |
+| bfloat16 output | torchvision's value rounded to bfloat16 (8 significant bits), as `.to(torch.bfloat16)` rounds it; at most one bfloat16 step away (about 0.016 at normalized values near 2.6) where the two land on either side of a rounding edge, which pipelines with a blur do more often |
 | threshold ops (`RandomSolarize`) | a value landing exactly on the threshold may be inverted on one side and not the other; all other values match |
 
 torchvision's uint8 path rounds after every op; this matches its float path.
