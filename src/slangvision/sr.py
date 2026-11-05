@@ -1,14 +1,16 @@
-# slangvision/sr.py — drop-in replacements for the GPU degradation functions
-# of BasicSR (basicsr.utils.img_process_util, basicsr.data.degradations),
-# which Real-ESRGAN and the diffusion SR models built on it call in their
-# training step on float (B, 3, H, W) batches. Same names and arguments, and
-# the same results apart from the noise values themselves; swap the import:
-#
-#     from slangvision.sr import USMSharp       # was basicsr.utils.img_process_util
-#     from slangvision.sr import DiffJPEG       # was basicsr.utils.diffjpeg
-#
-# Each has its own Slang kernels (shaders/kernels/); slangvision.testing has
-# the references.
+"""Drop-in replacements for BasicSR's GPU degradation functions
+(basicsr.utils.img_process_util, basicsr.data.degradations,
+basicsr.utils.diffjpeg), which Real-ESRGAN and the diffusion SR models built
+on it call in their training step on float (B, 3, H, W) batches. Same names
+and arguments, and the same results apart from the noise values themselves;
+swap the import::
+
+    from slangvision.sr import USMSharp       # was basicsr.utils.img_process_util
+    from slangvision.sr import DiffJPEG       # was basicsr.utils.diffjpeg
+
+See docs/SR.md. Each has its own Slang kernels (shaders/kernels/);
+slangvision.testing has the references.
+"""
 
 from __future__ import annotations
 
@@ -317,7 +319,7 @@ class DiffJPEG:
     soft rounding, ``round(t) + (t - round(t))**3``, but no gradients: it
     raises NotImplementedError when ``x`` requires them. ``libjpeg=True`` is
     closer to a real encoder and decoder and no longer BasicSR's result (the
-    differences: docs/GUIDE.md, Super resolution); it always rounds plainly.
+    differences: docs/SR.md); it always rounds plainly.
 
     Takes a (B, 3, H, W) float16, bfloat16 or float32 CUDA tensor in [0, 1]
     (BasicSR takes float32 only) and returns the batch in the same dtype.

@@ -62,7 +62,15 @@ notes (interpreter paths, GPU hosts, identities) in your own untracked
   use 32-bit index math: one call handles fewer than 2^31 output values.
 - CUDA hot-loop rules: no float3/float2 in kernels (NVRTC spills the structs
   Slang emits; even one `float4(x.rgb, y)` per pixel costs about 2.6x), no
-  dynamically indexed local arrays; hoist invariants.
+  dynamically indexed local arrays; hoist invariants. NVRTC's `exp`, `pow`,
+  `log` are its precise software versions here (the torch-made device has
+  no fast floating-point mode; a `spy.Device(..., existing_device_handles=
+  spy.get_cuda_current_context_native_handles())` could set it, but that
+  changes results): compute per-image constants once in the sampler, as
+  GaussianBlur's taps are.
+- Statistics pre-passes exit early for images that do not apply the op, so
+  an op's `hit` flag (where its `stop()` line sits) must not depend on pixel
+  values, only on the image's parameters.
 - Kernels run on PyTorch's current CUDA stream through
   `spy.create_torch_device`. Not inside CUDA graph capture (SlangPy queries
   the stream while capturing).
@@ -97,8 +105,11 @@ notes (interpreter paths, GPU hosts, identities) in your own untracked
 
 - docs/GUIDE.md — the user guide (transforms, rules, decoders, custom ops,
   accuracy, performance, limits).
+- docs/SR.md — slangvision.sr (BasicSR's degradations), its measurements and
+  the DiffJPEG analysis.
 - docs/TESTING.md — per-transform evidence and validation records; update
-  it when adding transforms or tests.
+  it when adding transforms or tests. Keep each measured number in one
+  place (GUIDE, SR.md or a results file) and link to it from elsewhere.
 - docs/ROADMAP.md — what is planned next.
 - benchmarks/compare_pipelines.py — reference numbers and honest notes in
   its header.

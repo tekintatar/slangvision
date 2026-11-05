@@ -23,12 +23,15 @@ x = train(images)   # (64, 3, 224, 224) float16; a list of decoded images also w
 # Compose(..., dtype=torch.bfloat16) or torch.float32 for other output types
 ```
 
-- **Fast.** An ImageNet augmentation batch of 256 takes 1.3 ms on an H100,
-  against 7.3 ms for torchvision's batched transforms (one setting for the
-  whole batch), 389 ms for torchvision image by image, and 17 ms for Kornia.
+- **Fast.** An ImageNet augmentation batch of 256 takes 1.7 ms on an RTX PRO
+  4500, against 20 ms for torchvision's batched transforms (one setting for
+  the whole batch), 19 ms for Kornia, and 203 ms for torchvision one image at
+  a time on the GPU (36 ms of it GPU time; the rest is launching about 86
+  small kernels per image).
 - **torchvision's results.** Each transform matches torchvision's float
-  functional image by image (about 1e-5 in float32), so switching does not
-  change what your model sees.
+  functional image by image (about 1e-5 in float32). Pipelines that run
+  torchvision on uint8 or PIL images differ by its rounding, up to 1/255 per
+  op ([Accuracy](https://github.com/tekintatar/slangvision/blob/main/docs/GUIDE.md#accuracy)).
 - **Per-image randomness.** Every image gets its own crop, flip, jitter
   factors and jitter order; `same_on_batch=True` on a transform shares them.
   Seeded from `torch.manual_seed`, with no host sync.
@@ -55,60 +58,34 @@ This page describes `main`, which has transforms not yet released on PyPI
 For them, install from GitHub:
 `pip install git+https://github.com/tekintatar/slangvision`.
 
-No CUDA Toolkit or environment variables are needed. SlangVision compiles
-its kernels at run time with NVRTC, CUDA's run-time compiler, and uses the
-copy that pip installs with PyTorch. SlangPy only finds NVRTC under a name
-PyTorch's copy does not have, so `setup` adds one link, `libnvrtc.so`, to
-SlangPy's package folder; `python -m slangvision undo` removes it, and
-`python -m slangvision` shows what will be used. Until then, the first
-pipeline call stops and asks for it. SlangVision also keeps a folder of
-links in `~/.cache/slangvision`, and it never replaces a `libnvrtc.so` it
-did not make.
-
-The first call of a pipeline compiles it (about 1 s, plus about 1 s to set
-up the GPU device once per process); later calls reuse the compiled
-kernels.
-
-### If NVRTC is newer than your driver
-
-NVRTC must be no newer than the "CUDA Version" `nvidia-smi` prints: the
-driver rejects code from a newer one. Current PyTorch (2.15) installs NVRTC
-13.2, while NVIDIA driver 580 supports CUDA 13.0. SlangVision checks this
-before it starts and says which versions it found. Either update the
-driver, or install the NVRTC that matches it:
-
-```bash
-pip install "cuda-toolkit[nvrtc,cudart]==13.0.*"   # use your driver's CUDA version
-```
-
-pip then reports a dependency conflict (torch asks for 13.2), but it installs
-the packages, and PyTorch keeps working: we trained a model with it, with
-and without `torch.compile`.
-
-### Your own CUDA Toolkit
-
-A system-wide CUDA Toolkit is used instead when NVRTC is on the system
-library path (on Ubuntu, `cuda-nvrtc-dev-13-0` and `cuda-cudart-dev-13-0`
-from NVIDIA's apt repository, then `sudo ldconfig`), and so is a toolkit you
-point to with `CUDA_PATH` (set `LD_LIBRARY_PATH` to its library folder too).
-Neither needs `setup`, and SlangVision changes nothing. Its errors say which NVRTC and driver
-versions it saw.
+No CUDA Toolkit or environment variables are needed: SlangVision compiles
+its kernels with the NVRTC that pip installs with PyTorch, and `setup` adds
+the one link SlangPy needs to find it. The first call of a pipeline compiles
+it (about 1 s, plus about 1 s to set up the GPU device once per process).
+If NVRTC is newer than your driver, or you use your own CUDA Toolkit, see
+[Requirements](https://github.com/tekintatar/slangvision/blob/main/docs/GUIDE.md#requirements)
+in the guide; SlangVision's errors say which versions it found.
 
 ## Transforms
 
-`RandomResizedCrop`, `Resize`, `CenterCrop`, `RandomCrop`, `Pad`,
-`RandomHorizontalFlip`, `RandomVerticalFlip`, `RandomRotation`,
-`RandomAffine`, `RandomPerspective`, `ColorJitter`, `RandomPhotometricDistort`,
-`RandomChannelPermutation`, `Grayscale`, `RandomGrayscale`, `GaussianBlur`, `GaussianNoise`, `RandomSolarize`, `RandomInvert`,
-`RandomPosterize`, `RandomAdjustSharpness`, `RandomAutocontrast`,
-`RandomEqualize`, `RandAugment`, `TrivialAugmentWide`, `AutoAugment`, `RandomApply`,
-`RandomChoice`, `Normalize` and
-`RandomErasing`, with torchvision's names and
-parameters,
-including bilinear or bicubic resizing. `TimmRandAugment("rand-m9-mstd0.5-inc1")`
-is timm's RandAugment, the one DeiT, ConvNeXt and Swin train with, with
-Pillow's ops. Every random transform takes
-`same_on_batch=False`. A SimCLR pipeline:
+torchvision's names and parameters, per-image random values:
+
+- **Geometry:** `RandomResizedCrop`, `Resize` (bilinear or bicubic),
+  `CenterCrop`, `RandomCrop`, `Pad`, `RandomHorizontalFlip`,
+  `RandomVerticalFlip`.
+- **Warps:** `RandomRotation`, `RandomAffine`, `RandomPerspective`.
+- **Colour:** `ColorJitter`, `RandomPhotometricDistort`,
+  `RandomChannelPermutation`, `Grayscale`, `RandomGrayscale`,
+  `RandomSolarize`, `RandomInvert`, `RandomPosterize`,
+  `RandomAutocontrast`, `RandomEqualize`, `GaussianNoise`.
+- **Filters:** `GaussianBlur`, `RandomAdjustSharpness`.
+- **Policies:** `RandAugment`, `TrivialAugmentWide`, `AutoAugment`, and
+  `TimmRandAugment("rand-m9-mstd0.5-inc1")`, timm's RandAugment with
+  Pillow's ops (DeiT, ConvNeXt, Swin).
+- **Composition and output:** `RandomApply`, `RandomChoice`, `Normalize`,
+  `RandomErasing`.
+
+Every random transform takes `same_on_batch=False`. A SimCLR pipeline:
 
 ```python
 import slangvision as A
@@ -127,8 +104,9 @@ simclr = A.Compose([
 Pipelines are checked when you build them: geometry comes first and fixes
 the output size, and `Normalize` comes last. The
 [guide](https://github.com/tekintatar/slangvision/blob/main/docs/GUIDE.md)
-has the full rules, decoder recipes (torchvision, nvImageCodec, DALI,
-DataLoader), accuracy and limits.
+has the full rules, recipes (CIFAR, DeiT/ConvNeXt, ThreeAugment), decoder
+recipes (torchvision, nvImageCodec, DALI, DataLoader), a mapping from
+Albumentations, accuracy and limits.
 
 ### MixUp and CutMix
 
@@ -153,12 +131,12 @@ from slangvision.sr import (DiffJPEG, USMSharp, random_add_gaussian_noise_pt,
 ```
 
 Drop-in replacements for the BasicSR functions that Real-ESRGAN's training
-step calls on the GPU, with the same arguments and results. Its USM
-sharpening of the targets takes 1.5 ms instead of 118 ms per batch of 12 at
-400×400, its Poisson noise 0.5 ms instead of 7 ms and its JPEG 0.3 ms
-instead of 1.5 ms (RTX PRO 4500). With the first two swapped, making
-Real-ESRGAN's low-resolution batch drops from 127 ms to 7.5 ms; swapping the
-JPEG as well saves another 2.4 ms.
+step calls on the GPU, with the same arguments and results: USM sharpening of
+the targets takes 1.5 ms instead of 118 ms per batch of 12 at 400×400 (RTX
+PRO 4500), and making Real-ESRGAN's whole low-resolution batch drops from
+127 ms to under 8 ms. Details, and where BasicSR's DiffJPEG differs from a
+real JPEG encoder, are in
+[SR.md](https://github.com/tekintatar/slangvision/blob/main/docs/SR.md).
 
 ## Custom ops
 
@@ -179,22 +157,26 @@ train = A.Compose([A.RandomResizedCrop(224), A.RandomHorizontalFlip(), RandomGam
 `apply` gets the pixel and one value per parameter, drawn per image. Ops that
 read neighbouring pixels (blurs, filters) subclass `A.NeighborhoodOp` the
 same way. `slangvision.testing.max_reference_error(pipe, images)` checks a
-pipeline against torchvision and your references, and `pipe.source` shows the
-generated Slang.
+pipeline against torchvision and your references, and `train.source` shows
+the generated Slang.
 
 ## Performance
 
-Batch 256, 512×384 uint8 in, 224×224 fp16 out, one NVIDIA H100 NVL, ms per
-batch:
+Batch 256, 512×384 uint8 in, 224×224 fp16 out, one NVIDIA RTX PRO 4500
+Blackwell, ms per batch, wall time (GPU time):
 
-| Recipe | SlangVision | torchvision, batched | torchvision, per image | Kornia (per-image random) |
+| Recipe | SlangVision | torchvision, batched | torchvision, one image at a time | Kornia (per-image random) |
 |---|---:|---:|---:|---:|
-| ImageNet: crop, flip, ColorJitter, Normalize | **1.31** | 7.32 | 389 | 16.6 |
-| Evaluation: Resize, CenterCrop | **0.68** | 2.90 | 51.9 | — |
-| SimCLR: + grayscale, blur, solarize | **2.30** | 7.6–12.6 | 390 | 22.3 |
+| ImageNet: crop, flip, ColorJitter, Normalize | **1.66** (1.47) | 20.2 (20.2) | 203 (35.7) | 19.3 (14.0) |
+| Evaluation: Resize, CenterCrop | **0.87** (0.66) | 5.60 (5.80) | 27.6 (7.65) | — |
+| SimCLR: + grayscale, blur, solarize | **2.54** (2.30) | 20.5 (26.5) | 221 (40.4) | 29.7 (23.8) |
 
 torchvision's batched mode does less work (one random setting for all 256
-images); its per-image loop is the like-for-like comparison.
+images); its per-image loop is the like-for-like comparison, and most of its
+wall time is launching small kernels. `benchmarks/compare_pipelines.py`
+reproduces this table; raw data in
+[`benchmarks/results/rtx_pro_4500_2026-11-05.json`](https://github.com/tekintatar/slangvision/blob/main/benchmarks/results/rtx_pro_4500_2026-11-05.json)
+(an earlier H100 run is in the script's header).
 
 In real training, decoding usually decides throughput. Training from scratch
 on an ImageNet subset (45,000 JPEGs, batch 256, bf16) on one H100 NVL with 18
@@ -212,9 +194,8 @@ ImageNet-sized photos; with larger ones decode on the GPU too (the guide
 has an FGVC-Aircraft benchmark at about 0.7 MP).
 With DALI's GPU decoding, training runs within about 3% of DALI's own
 augmentation, with torchvision's results instead of DALI's approximations.
-Both tables were measured with the same kernels while they shipped as
-`slangimage.augment`. `benchmarks/compare_pipelines.py` reproduces the first
-(a later run on an RTX PRO 4500 is in its header); the training runs used a
+This table is indicative: it was measured with an earlier version of the
+kernels (shipped as `slangimage.augment`), one run per row, with a training
 script that is not in this repository. Method and caveats are in the
 [guide](https://github.com/tekintatar/slangvision/blob/main/docs/GUIDE.md#performance).
 

@@ -1,29 +1,24 @@
 # Roadmap
 
-- **Phase 1** ✅ (2026-11-03, first developed as `slangimage.augment`):
-  torchvision-style pipelines compiled into fused Slang kernels, random
-  values per image (`same_on_batch` optional), in-place reads of batches or
-  lists of decoded images (CHW/HWC), public `ColorOp`/`NeighborhoodOp` for
-  custom ops. Transforms: RandomResizedCrop, Resize, CenterCrop,
-  RandomHorizontalFlip, ColorJitter, RandomApply, RandomGrayscale,
-  GaussianBlur, RandomSolarize, Normalize. CUDA only.
-- **Since 0.1.0** (unreleased): bfloat16 output, bicubic resizing,
-  RandomCrop (padding modes), Pad, RandomVerticalFlip, RandomChoice,
-  RandomErasing, MixUp/CutMix, RandomRotation/RandomAffine/RandomPerspective
-  (a warp pass), RandomInvert/RandomPosterize/RandomAdjustSharpness/
-  RandomAutocontrast/RandomEqualize (torchvision's float behaviour; per-image
-  statistics from pre-passes), torchvision's RandAugment,
-  TrivialAugmentWide and AutoAugment, timm's RandAugment. Next: common
-  Albumentations ops (RandomBrightnessContrast, RandomGamma, GaussNoise,
-  CoarseDropout).
-- **Phase 2 — policies**: torchvision's RandAugment ✅ (2026-11-05), timm's
-  RandAugment ✅ (2026-11-05, Pillow's ops on float values), TrivialAugmentWide ✅ and
-  AutoAugment ✅ (2026-11-05), as per-image choices among the same ops (geometric ones
-  through the warp pass). Float behaviour, decided 2026-11-05: torchvision's uint8 path cannot
-  be matched exactly anyway (its uint8 resize differs); most ops differ by
-  at most 1/255, posterize by its rounding scheme, and equalize can move a
-  value by a level where the two quantize an input differently. timm's SolarizeAdd comes with
-  timm's policies. A rounding-to-uint8 mode only if someone needs exact uint8
-  parity.
-- **Phase 3 — targets**, only if users ask: masks, boxes and keypoints with
-  the same per-image values.
+What is done is in the [changelog](../CHANGELOG.md); this page lists what may
+come next and what was decided against.
+
+- **Next, small:** RandomBrightnessContrast and RandomGamma as built-ins if
+  people ask (today they are a few lines as a `ColorOp`; see the guide's
+  "Coming from Albumentations"). Albumentations' other popular ops map onto
+  existing transforms, except CLAHE and MedianBlur.
+- **Performance, measured first:** separable resampling for large
+  downscales (bicubic from large photos), and fewer statistics passes in
+  the policies when no image picks contrast, autocontrast or equalize.
+- **Targets**, if users ask: masks, boxes and keypoints transformed with the
+  same per-image values, variable output sizes (scale jitter, letterbox).
+  This is what detection, segmentation and most Albumentations users need.
+- **Maybe:** AugMix (a different pass structure), ElasticTransform, timm's
+  AutoAugment policies (per-entry level functions on the TimmRandAugment
+  pass).
+- **Decided against for now:** an Albumentations compatibility mode
+  (SlangVision keeps torchvision's semantics); a uint8 rounding mode between
+  ops (torchvision's uint8 path cannot be matched exactly anyway: most ops
+  differ by at most 1/255); BasicSR's filter2D on the GPU (cuDNN is already
+  fast). Batched augmentation stays in this package; image-processing
+  operators are SlangImage's.

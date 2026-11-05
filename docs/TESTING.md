@@ -27,7 +27,7 @@ output and 4e-3 for float16 output, in normalized units.
 | Grayscale | reference: 3 channels after ColorJitter; 1 channel (a `(B, 1, H, W)` output) before ColorJitter and a one-value Normalize, and before RandomErasing |
 | RandomPhotometricDistort | reference: defaults after RandomResizedCrop, `p=1` with Normalize, wide ranges with saturation off, inside RandomApply and after a warp; sampled frequencies of each op, contrast-first and the six channel orders |
 | RandomChannelPermutation | reference after RandomResizedCrop with Normalize |
-| GaussianBlur | reference: square and `(kx, ky)` kernels, fixed and random sigma, two blurs in one pipeline |
+| GaussianBlur | reference: square and `(kx, ky)` kernels, fixed and random sigma, two blurs in one pipeline; weights computed once per image by the sampler: sizes 1 to 23, (3, 9) and (1, 5) |
 | RandomSolarize | reference off the threshold; values exactly on it may differ (checked to be on it) |
 | Normalize | reference (in every recipe) |
 | MixUp, CutMix | draws identical to torchvision's `make_params` under the same seeds (CPU); images (1e-6) and labels (exact) equal to torchvision's `v2.MixUp`/`v2.CutMix` on CUDA; float16 and bfloat16 outputs; input errors and empty batches |
@@ -36,7 +36,7 @@ output and 4e-3 for float16 output, in normalized units.
 | sr: USMSharp | reference (BasicSR's USMSharp.forward in torch, with TF32 off; checked once to equal BasicSR's own module exactly): default size within 2.4e-7, 7 and 21 taps (mask switches at the threshold, under 3e-3 of values, at most 2e-3); float16 and bfloat16 outputs; OpenCV's kernel (formula and fixed small kernels, checked against OpenCV 5.0 for sizes 1-61); input errors |
 | sr: Gaussian noise | per-image sigma and gray flag equal BasicSR's draws under the same seed; a fractional gray weight blends (variance and channel correlation as BasicSR's formula); noise std per image within 3% of sigma; gray noise identical across channels and independent between images; colour channels uncorrelated; clip, rounds, dtypes, empty batch |
 | sr: Poisson noise | sampler: mean and variance per lambda 0-256 and chi-square against the exact pmf at lambdas 3-256 (both sampler branches); per-image mean and variance against BasicSR's formula with torch.poisson, colour and gray, two images' level counts; gray noise identical across channels; clip, rounds, dtypes |
-| sr: DiffJPEG | reference (BasicSR's DiffJPEG.forward in torch, the same operations in the same order; checked to equal BasicSR's own module exactly on four photos at 400x400 and 397x389): scalar quality 30 and 95 and per-image quality tensors, sizes a multiple of 16 and not, batch 1 (a 33x50 image), `differentiable` True (BasicSR's soft rounding) and False; values equal up to float rounding (mean under 1e-6; a coefficient on the edge of a quantization step can round the other way: under 2e-3 of values, measured at most 0.5/255 at quality 95 and 1e-4 of values); float16 and bfloat16 outputs; the caller's quality tensor unchanged; 0-d and integer quality tensors; errors for a scalar quality of 100, wrong quality shapes, uint8 input and inputs that need gradients; empty batch. `libjpeg=True` against Pillow 13 (libjpeg-turbo 3.2) 4:2:0 at quality 30-100: above 40 dB PSNR and at least 6 dB closer than BasicSR's on the test images, quality rounded per image as for a number; the mode read on every call; the mode read on every call |
+| sr: DiffJPEG | reference (BasicSR's DiffJPEG.forward in torch, the same operations in the same order; checked to equal BasicSR's own module exactly on four photos at 400x400 and 397x389): scalar quality 30 and 95 and per-image quality tensors, sizes a multiple of 16 and not, batch 1 (a 33x50 image), `differentiable` True (BasicSR's soft rounding) and False; values equal up to float rounding (mean under 1e-6; a coefficient on the edge of a quantization step can round the other way: under 2e-3 of values, measured at most 0.5/255 at quality 95 and 1e-4 of values); float16 and bfloat16 outputs; the caller's quality tensor unchanged; 0-d and integer quality tensors; errors for a scalar quality of 100, wrong quality shapes, uint8 input and inputs that need gradients; empty batch. `libjpeg=True` against Pillow 13 (libjpeg-turbo 3.2) 4:2:0 at quality 30-100: above 40 dB PSNR and at least 6 dB closer than BasicSR's on the test images, quality rounded per image as for a number; the mode read on every call |
 | RandomErasing | reference: constant and per-channel fills after Normalize, without Normalize, two boxes in order, random fill (box compared, noise skipped); noise mean 0 and std 1 with a normal tail, different per image; box area, aspect and rate follow torchvision's sampler; `same_on_batch` gives one box |
 | bfloat16 output | ImageNet and SimCLR recipes within one bfloat16 step of the float32 reference; the one-pass ImageNet recipe rounds like torch for more than 95% of values |
 | RandomInvert, RandomPosterize | reference: exact on images that are not resampled (posterize at 0, 3 and 8 bits); after RandomResizedCrop and ColorJitter, posterize off its level edges (under 2e-3 of values; measured about 5e-6 of pixels) |
@@ -173,13 +173,13 @@ validation of newer code.
   radius 0 and numpy ints). Timings against BasicSR (commit 8d56e3a, loaded
   from source in a scratch environment on the same host) and Real-ESRGAN's
   degradation before and after from ad-hoc scripts, medians of 20-40 synced
-  calls; numbers in docs/GUIDE.md (Super resolution).
+  calls; numbers in docs/SR.md.
 - 2026-11-05, sr.DiffJPEG, same host and stack: 334 passed (the tree also held other uncommitted transform changes). The
   analysis against Pillow and OpenCV (both libjpeg-turbo 3.x; identical
   output on the test photos), the reference checked against BasicSR's module
   (commit 8d56e3a, loaded from source) and the timings (medians of 40 synced
   calls; Real-ESRGAN's degradation as before) came from ad-hoc scripts;
-  numbers in docs/GUIDE.md (Super resolution).
+  numbers in docs/SR.md.
 - 2026-11-05, review fixes on top of 91bc882 (sr ops and mixers detach
   their input, Compose fixed when built, TimmMixup with `mixup_enabled`,
   parsing checked against torchvision and OpenCV), same host (RTX PRO 4500
@@ -188,3 +188,15 @@ validation of newer code.
   review's cleanups 375 passed. The
   requires-grad test was also run with the detach removed, and failed with
   SlangPy's "In-place operations not supported for torch autograd".
+- 2026-11-05, 34519ed (NeighborhoodOp, GaussianNoise `same_on_batch`,
+  clearer errors), same host and stack: 378 passed.
+- 2026-11-05, performance fixes (statistics pre-passes skip images without
+  their op; pass 0's statistics read a stored float32 resample with bicubic
+  or large bilinear inputs; GaussianBlur weights from the sampler), same host
+  and stack: 381 passed; after the review (the stored copy only when the
+  statistic ops run on every image on average, the blur sampler's loop for 1
+  tap) 383 passed, and 384 with a test of 1-tap blurs. The stored and resampled paths give the same output within
+  float rounding (float32, float16, bfloat16; CHW and HWC lists).
+  Benchmarks: `benchmarks/results/rtx_pro_4500_review_perf_2026-11-05.json`
+  (before/after), `rtx_pro_4500_2026-11-05.json` (README table) and
+  `rtx_pro_4500_fgvc_aircraft_*_after_review_2026-11-05.json`.

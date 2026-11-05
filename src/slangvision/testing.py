@@ -34,7 +34,10 @@ _MODES: dict[str, Any] = {}     # filled with torchvision's InterpolationMode on
 def max_reference_error(pipeline: Compose, images: Any, layout: str = "chw") -> float:
     """Run ``pipeline`` on ``images`` and return the largest absolute
     difference from the torch references fed the same random values, in
-    output units (normalized, if the pipeline ends with Normalize)."""
+    output units (normalized, if the pipeline ends with Normalize). Random
+    noise (GaussianNoise, RandomErasing's "random" fill) cannot be replayed,
+    so those pixels are skipped; if nothing is comparable (GaussianNoise
+    with sigma > 0 anywhere in the pipeline), the result is NaN."""
     out, params = pipeline._run(images, layout)
     ref = _replay(pipeline, images, params, layout)
     if out.shape != ref.shape:

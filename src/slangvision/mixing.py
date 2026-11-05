@@ -1,13 +1,14 @@
-# slangvision/mixing.py — MixUp and CutMix on an augmented batch, after Compose:
-#
-#     x, y = mix(train(images), labels)
-#
-# They need labels and other images' augmented pixels, so they are a separate
-# step: one fused Slang kernel per call (shaders/kernels/mix.slang) writes the
-# mixed batch, with parameters drawn by torch's CPU generator (no GPU sync;
-# torch.manual_seed repeats them). MixUp and CutMix follow
-# torchvision.transforms.v2 draw for draw, so with the same seed they give
-# torchvision's results; TimmMixup follows timm's Mixup.
+"""MixUp and CutMix on an augmented batch, after Compose::
+
+    x, y = mix(train(images), labels)
+
+They need labels and other images' augmented pixels, so they are a separate
+step: one fused Slang kernel per call (shaders/kernels/mix.slang) writes the
+mixed batch, with parameters drawn by torch's CPU generator (no GPU sync;
+torch.manual_seed repeats them). MixUp and CutMix follow
+torchvision.transforms.v2 draw for draw, so with the same seed they give
+torchvision's results; TimmMixup follows timm's Mixup.
+"""
 
 from __future__ import annotations
 

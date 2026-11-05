@@ -36,12 +36,20 @@ x = train(images)      # (64, 3, 224, 224) float16, on the current CUDA stream
 It does not decode images: pair it with your decoder
 ([Inputs and decoders](#inputs-and-decoders)).
 
+Contents: [Requirements](#requirements) · [How a pipeline runs](#how-a-pipeline-runs)
+· [Pipeline rules](#pipeline-rules) · [Randomness](#randomness) ·
+[Transforms](#transforms) · [Policies](#policies) · [Recipes](#recipes) ·
+[Inputs and decoders](#inputs-and-decoders) · [MixUp and CutMix](#mixup-and-cutmix)
+· [Custom ops](#custom-ops) · [Coming from Albumentations](#coming-from-albumentations)
+· [Accuracy](#accuracy) · [Performance](#performance) · [Limits](#limits).
+Super-resolution degradations (Real-ESRGAN's) have their own page:
+[SR.md](https://github.com/tekintatar/slangvision/blob/main/docs/SR.md).
+
 ## Requirements
 
-Linux, an NVIDIA GPU and PyTorch with CUDA. SlangVision uses the NVRTC that
-pip installs with PyTorch, after a one-time `setup`; see the README's
-[Install](https://github.com/tekintatar/slangvision#install) section, also
-for when that NVRTC is newer than your driver:
+Linux, an NVIDIA GPU and PyTorch with CUDA. SlangVision compiles its
+kernels at run time with NVRTC, CUDA's run-time compiler, and uses the copy
+that pip installs with PyTorch, after a one-time `setup`:
 
 ```bash
 pip install slangvision torchvision
@@ -55,6 +63,112 @@ uses SlangPy's pure-Python torch bridge for its own calls, which adds under
 
 The first call of a pipeline compiles it (about 1 s, plus about 1 s to set up
 the GPU device once per process); later calls reuse the compiled kernels.
+
+`setup` adds one link, `libnvrtc.so`, to SlangPy's package folder, because
+SlangPy looks for NVRTC under that name and PyTorch's copy has a versioned
+one; `python -m slangvision undo` removes it, and `python -m slangvision`
+shows what will be used. SlangVision also keeps a folder of links in
+`~/.cache/slangvision`, and never replaces a `libnvrtc.so` it did not make.
+
+### If NVRTC is newer than your driver
+
+NVRTC must be no newer than the "CUDA Version" `nvidia-smi` prints: the
+driver rejects code from a newer one. In November 2026 PyTorch 2.15 installs
+NVRTC 13.2, while NVIDIA driver 580 supports CUDA 13.0. SlangVision checks
+this before it starts and says which versions it found. Either update the
+driver, or install the NVRTC that matches it:
+
+```bash
+pip install "cuda-toolkit[nvrtc,cudart]==13.0.*"   # use your driver's CUDA version
+```
+
+pip then reports a dependency conflict (torch asks for 13.2), but it installs
+the packages, and PyTorch keeps working: we trained a model with it, with
+and without `torch.compile`.
+
+### Your own CUDA Toolkit
+
+A system-wide CUDA Toolkit is used instead when NVRTC is on the system
+library path (on Ubuntu, `cuda-nvrtc-dev-13-0` and `cuda-cudart-dev-13-0`
+from NVIDIA's apt repository, then `sudo ldconfig`), and so is a toolkit you
+point to with `CUDA_PATH` (set `LD_LIBRARY_PATH` to its library folder too).
+Neither needs `setup`, and SlangVision changes nothing. Its errors say which
+NVRTC and driver versions it saw.
+
+## How a pipeline runs
+
+`Compose` turns the pipeline into a few GPU kernels when it is built, and
+compiles them on the first call:
+
+- A **sampler** kernel draws every image's random values (crop box, flip,
+  factors, op choices) into a small table.
+- A **pass** is one kernel that computes every output pixel once and writes
+  the image. The first pass reads your images, crops and resizes them, and
+  applies the flips and colour ops that follow.
+- **Colour ops** (ColorJitter, grayscale, solarize, noise, your `ColorOp`)
+  change one pixel at a time, so they run inside a pass at no extra memory
+  traffic.
+- **Neighbourhood ops** read the pixels around each one: blurs, sharpness,
+  your `NeighborhoodOp`. **Warps** (rotation, affine, perspective, and the
+  geometric ops of the policies) read the image at moved positions. Each of
+  them starts a new pass over the image as it is at that point.
+- A **pre-pass** runs before a pass when an op needs a statistic of each
+  image: ColorJitter's contrast (the mean gray), autocontrast (each
+  channel's minimum and maximum) and equalize (histograms) read the image up
+  to that op and reduce it.
+
+Between passes the image is stored in float16 (float32 for float32 output).
+When a pre-pass in the first pass would make the costly resample run twice
+(bicubic, or large photos), the first pass resamples once into a float32
+copy instead (see [Performance](#performance)).
+The number of passes, not the number of colour ops, is what mostly sets the
+cost.
+
+## Pipeline rules
+
+Checked when you build the `Compose`:
+- Geometry comes first: at most one `RandomResizedCrop` or `Resize`, then
+  any sequence of `Pad`, `CenterCrop` and `RandomCrop` (each pads with its
+  own `padding_mode`, so they compose as torchvision applies them one after
+  the other). Like torchvision, reflect padding must be smaller than the
+  image and symmetric padding at most its size, or the call raises
+  `ValueError`. All images must end up the same size: `Resize(int)`
+  (shorter side, aspect kept) needs a crop after it; `Resize((h, w))`,
+  `RandomResizedCrop` and the crops fix the size; with only `Pad` or no
+  geometric transform, all input images must be the same size. A
+  `RandomCrop` larger than a (padded) image raises `ValueError`, as in
+  torchvision.
+- Warps (`RandomRotation`, `RandomAffine`, `RandomPerspective`) come after
+  the resize, crops and pads, in any order with the other transforms; a
+  warp before them raises `ValueError`.
+- Flips go anywhere after the geometric transforms, but not after a
+  `NeighborhoodOp` you define unless a warp comes between them. They commute
+  with colour ops and Gaussian blur; a flip after a warp is applied after it.
+- Each transform object appears once; create a second one to use it twice.
+- `Normalize`, if present, comes after every transform except
+  `RandomErasing`, which comes last (several erase several boxes, in order).
+  Without `Normalize` the output is in [0, 1].
+
+`Compose(transforms, dtype=torch.float16)` is the default; `torch.bfloat16`
+(for models trained in bfloat16, at the same speed as float16) and
+`torch.float32` are the other choices. Passes between blurs, warps and the
+final output keep float16 (float32 for float32 output). The output is a
+contiguous `(B, 3, H, W)` tensor (`(B, 1, H, W)` after
+`Grayscale(num_output_channels=1)`); for `channels_last`, call `.to(...)` on
+it.
+
+A `Compose` is fixed when it is built: changing one of its transforms
+afterwards is not supported. To change parameters during training (a
+magnitude schedule), build a new `Compose`; each new set of values compiles
+once, which takes a few seconds.
+
+## Randomness
+
+Random values come from a counter-based generator in the sampler kernel,
+seeded on every call from PyTorch's CUDA generator: `torch.manual_seed`
+makes runs repeat, and there is no host sync. Values are drawn per image;
+`same_on_batch=True` on a transform gives every image the same values for
+that transform (for `RandomApply`, the same apply/skip decision).
 
 ## Transforms
 
@@ -97,6 +211,17 @@ torchvision's filters: with `antialias=True` (the default) PyTorch's
 antialias kernels, cubic with a = -0.5 like PIL, and without it classic
 bicubic with a = -0.75. Bicubic float output can overshoot [0, 1], as
 torchvision's does; it costs about twice as much as bilinear.
+
+The warps (`RandomRotation`, `RandomAffine`, `RandomPerspective`) sample
+the image as it is at their point of the pipeline with `"nearest"` or
+`"bilinear"` interpolation, as torchvision does for tensors, and keep its
+size. Each runs as its own pass, and costs about 0.2 ms per batch of 256 at
+224x224 (see Performance). Pixels that come from outside the image get
+`fill` the way torchvision's grid sampling does: with bilinear
+interpolation, edge pixels blend toward `fill` (with `fill=0`, toward
+black).
+
+## Policies
 
 `RandAugment` is torchvision's: for each image, `num_ops` times, one of 14
 ops (identity, shear x/y, translate x/y, rotate, brightness, colour,
@@ -149,27 +274,45 @@ grows with the magnitude. The string is read as current timm reads it
   (torchvision's float-to-uint8 conversion), so they give Pillow's levels
   and thresholds; posterize keeps the image at 8 or more bits (magnitudes
   above 10 with `mmax`), as timm does, and at 0 bits or fewer, which timm
-  asks for at magnitude 10 with `inc1`, gives black as Pillow 12 does. Pillow 13 raises a `ValueError` there,
-  which stops timm's own `rand-m9-mstd0.5-inc1` pipeline: 98 of 60,000
-  images under Pillow 13.0 and timm 1.0.31, as expected from 2 layers x 0.5
-  x 1/15 x P(magnitude clamps to 10) = 2.3%.
+  asks for at magnitude 10 with `inc1`, gives black as Pillow 12 does.
+  Pillow 13 raises a `ValueError` there, which stops timm's own
+  `rand-m9-mstd0.5-inc1` pipeline: 98 of 60,000 images under Pillow 13.0
+  and timm 1.0.31, as expected from 2 layers x 0.5 (applied) x 1/15
+  (posterize) x 2.3% (the magnitude clamps to 10) = 0.15%.
 
 Pillow rounds every op's result to uint8 (resampling and blends truncate);
 SlangVision keeps floats between ops, as it does for torchvision's ops. Each
 layer runs as its own pass, like `RandAugment`.
 
-The warps (`RandomRotation`, `RandomAffine`, `RandomPerspective`) sample
-the image as it is at their point of the pipeline with `"nearest"` or
-`"bilinear"` interpolation, as torchvision does for tensors, and keep its
-size. Each runs as its own pass, and costs about 0.2 ms per batch of 256 at
-224x224 (see Performance). Pixels that come from outside the image get
-`fill` the way torchvision's grid sampling does: with bilinear
-interpolation, edge pixels blend toward `fill` (with `fill=0`, toward
-black). A CIFAR recipe with rotation is `[RandomCrop(32, padding=4),
-RandomHorizontalFlip(), RandomRotation(15), Normalize(...)]`.
+## Recipes
 
 The CIFAR recipe is `[RandomCrop(32, padding=4), RandomHorizontalFlip(),
-Normalize(...)]`. DeiT III's ThreeAugment is
+Normalize(...)]`; with rotation, add `RandomRotation(15)` after the flip.
+
+DeiT's recipe (timm's `create_transform` with DeiT's arguments, also the
+base of ConvNeXt's and MAE fine-tuning):
+
+```python
+import slangvision as A
+
+mean, std = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+train = A.Compose([
+    A.RandomResizedCrop(224, interpolation="bicubic"),
+    A.RandomHorizontalFlip(),
+    A.TimmRandAugment("rand-m9-mstd0.5-inc1", interpolation="bicubic"),
+    A.Normalize(mean, std),
+    A.RandomErasing(p=0.25, scale=(0.02, 1 / 3), ratio=(0.3, 1 / 0.3), value="random"),
+])
+mix = A.TimmMixup(mixup_alpha=0.8, cutmix_alpha=1.0, label_smoothing=0.1, num_classes=1000)
+# x, y = mix(train(images), labels)
+```
+
+timm's `RandomErasing(probability=0.25, mode="pixel")` is the
+`RandomErasing` line above, after `Normalize`.
+`slangvision.testing.max_reference_error` skips noise-filled pixels (no
+library can replay another's noise); the box itself is compared.
+
+DeiT III's ThreeAugment is
 `[Resize(224, interpolation="bicubic"), RandomCrop(224, padding=4,
 padding_mode="reflect"), RandomHorizontalFlip(),
 RandomChoice([RandomGrayscale(p=1), RandomSolarize(0.5, p=1),
@@ -177,48 +320,6 @@ GaussianBlur(13)]), ColorJitter(0.3, 0.3, 0.3), Normalize(...)]`; DeiT
 blurs with PIL's radius-based filter, which `GaussianBlur` only
 approximates. `RandomChoice(..., same_on_batch=True)` makes the same choice
 for every image.
-
-DeiT and ConvNeXt erase with timm's `RandomErasing(probability=0.25,
-mode="pixel")`, which is `RandomErasing(p=0.25, scale=(0.02, 1 / 3),
-ratio=(0.3, 1 / 0.3), value="random")` after `Normalize`.
-`slangvision.testing.max_reference_error` skips noise-filled pixels (no
-library can replay another's noise); the box itself is compared.
-
-Pipeline rules, checked when you build the `Compose`:
-- Geometry comes first: at most one `RandomResizedCrop` or `Resize`, then
-  any sequence of `Pad`, `CenterCrop` and `RandomCrop` (each pads with its
-  own `padding_mode`, so they compose as torchvision applies them one after
-  the other). Like torchvision, reflect padding must be smaller than the
-  image and symmetric padding at most its size, or the call raises
-  `ValueError`. All images must end up the same size: `Resize(int)`
-  (shorter side, aspect kept) needs a crop after it; `Resize((h, w))`,
-  `RandomResizedCrop` and the crops fix the size; with only `Pad` or no
-  geometric transform, all input images must be the same size. A
-  `RandomCrop` larger than a (padded) image raises `ValueError`, as in
-  torchvision.
-- Warps (`RandomRotation`, `RandomAffine`, `RandomPerspective`) come after
-  the resize, crops and pads, in any order with the other transforms; a
-  warp before them raises `ValueError`.
-- Flips go anywhere after the geometric transforms, but not after a
-  `NeighborhoodOp` you define unless a warp comes between them. They commute
-  with colour ops and Gaussian blur; a flip after a warp is applied after it.
-- Each transform object appears once; create a second one to use it twice.
-- `Normalize`, if present, comes after every transform except
-  `RandomErasing`, which comes last (several erase several boxes, in order).
-  Without `Normalize` the output is in [0, 1].
-
-`Compose(transforms, dtype=torch.float16)` is the default; `torch.bfloat16`
-(for models trained in bfloat16, at the same speed as float16) and
-`torch.float32` are the other choices. Passes between blurs, warps and the
-final output keep float16 (float32 for float32 output). The output is a
-contiguous `(B, 3, H, W)` tensor (`(B, 1, H, W)` after
-`Grayscale(num_output_channels=1)`); for `channels_last`, call `.to(...)` on
-it.
-
-A `Compose` is fixed when it is built: changing one of its transforms
-afterwards is not supported. To change parameters during training (a
-magnitude schedule), build a new `Compose`; each new set of values compiles
-once, which takes a few seconds.
 
 ## Inputs and decoders
 
@@ -233,7 +334,10 @@ Images are read in place, without copying them into one buffer
 until the GPU has run the pipeline.** Tensors PyTorch allocated on
 the current stream always are, because PyTorch reuses freed memory only in
 stream order. Memory another library owns needs a sync before that library
-reuses it.
+reuses it. Images decoded on another stream need
+`torch.cuda.current_stream().wait_stream(that_stream)` before the call (and
+`image.record_stream(torch.cuda.current_stream())` if that stream frees
+them).
 
 Decoding usually limits training throughput, so pick a fast decoder:
 
@@ -292,7 +396,8 @@ workers ship whole decoded images instead of 224 px crops, and it was slower
 than augmenting on the CPU (see Performance). Have the workers pack each batch
 into one buffer: with `collate_fn=list`, PyTorch shares every image between
 processes separately, which made training slower than augmenting on the CPU
-(2,037 against 2,721 images/s for ResNet-18 in the benchmark below).
+(2,037 against 2,721 images/s for ResNet-18 in the README's training
+benchmark).
 
 ```py
 def collate(batch):                  # runs in the workers
@@ -338,110 +443,6 @@ x, y = mix(train(images), labels)       # labels: (B,) class indices or (B, clas
 One Slang kernel per call writes the mixed batch (float16, bfloat16 or
 float32, as given); the parameters come from torch's CPU generator, so there
 is no GPU sync.
-
-## Super resolution
-
-Real-ESRGAN, and the diffusion SR models that reuse its degradation, make
-their low-resolution inputs on the GPU in the training step with BasicSR's
-functions. `slangvision.sr` has drop-in replacements with the same names,
-arguments and results; change the import:
-
-```py
-from slangvision.sr import (DiffJPEG, USMSharp, random_add_gaussian_noise_pt,
-                            random_add_poisson_noise_pt)
-```
-
-- `USMSharp(radius=50, sigma=0)`, called `usm(img, weight=0.5,
-  threshold=10)`: BasicSR's unsharp masking of the targets. `radius` is
-  BasicSR's (the Gaussian's size, made odd), with OpenCV's kernel; reflect
-  padding, so images must be larger than half the size. BasicSR convolves the
-  51x51 Gaussian directly; here it runs as a row and a column pass, with the
-  same result (within 2.4e-7 at the default size; with smaller kernels a
-  residual within float rounding of the threshold can switch the mask,
-  moving nearby values by up to 2e-3). `.cuda()` and `.to()` return the
-  object, as BasicSR's module is used.
-- `add_gaussian_noise_pt(img, sigma, gray_noise, clip, rounds)` and
-  `random_add_gaussian_noise_pt(img, sigma_range, gray_prob, clip, rounds)`:
-  per-image sigma (0-255 scale) and gray flag, drawn with the same torch
-  calls as BasicSR, so the same seed gives the same values (a fractional
-  `gray_noise` blends colour and gray noise, as in BasicSR). The noise
-  itself comes from SlangVision's generator, keyed by one more draw from the
-  device's torch generator, so later draws there differ from a BasicSR run.
-  BasicSR draws one gray noise field and shares it across the batch; here
-  each image gets its own.
-- `add_poisson_noise_pt(img, scale, clip, rounds, gray_noise)` and
-  `random_add_poisson_noise_pt(img, scale_range, gray_prob, clip, rounds)`:
-  BasicSR's shot noise. Each value rounded to 1/255 becomes Poisson(q·n)/n,
-  n the image's number of distinct values rounded up to a power of two
-  (gray noise from the grayscale image, the same in all channels). BasicSR
-  counts the values with `torch.unique` in a Python loop over the batch; one
-  pass marks the levels here. Poisson values come from a sampler that
-  matches the exact distribution (tested against the pmf up to lambda 256).
-- `DiffJPEG(differentiable=True, libjpeg=False)`, called `jpeger(img,
-  quality)` with a number or one quality per image (Real-ESRGAN: uniform in
-  [30, 95]): BasicSR's JPEG degradation, the same values up to float
-  rounding (a DCT coefficient within rounding of a quantization step's edge
-  can round the other way and move its 8x8 block: about 1e-4 of values,
-  0.5/255 at most at quality 95, measured). `differentiable=True`
-  (BasicSR's default) gives the values of BasicSR's soft rounding; neither
-  has gradients, and an input that requires them raises unless the call
-  is under `torch.no_grad()`. Four kernels (the
-  DCTs separable, one thread per block row): 0.30 ms instead of 1.5 ms per
-  batch of 12 at 400x400 with a quality per image, 1.0 ms instead of 8.2 ms
-  at 48. BasicSR overwrites the caller's quality tensor with its factors
-  and truncates them for integer tensors; this one does neither. A quality
-  given as a number must be above 0 and below 100, or it raises (BasicSR's
-  tables are zero at 100, its output NaN); in a per-image tensor, 100 or 0
-  gives NaN for that image, as in BasicSR (checking would sync the host).
-
-Inputs are (B, 3, H, W) float16, bfloat16 or float32 CUDA tensors (BasicSR
-also takes other channel counts); outputs keep the dtype and carry no
-gradients (BasicSR's are differentiable; Real-ESRGAN calls them under
-`no_grad`).
-
-BasicSR's DiffJPEG is not what a JPEG encoder and decoder do: against
-Pillow's quality-q 4:2:0 JPEG (libjpeg-turbo; OpenCV's output is identical)
-of four photos (scikit-image's astronaut, coffee, motorcycle and chelsea,
-about 400x400) it is 35.7, 37.3, 38.5 and 42.1 dB PSNR at quality 30, 50,
-75 and 95, about as far from Pillow's result as Pillow's is from the
-original at quality 30 (31.6 dB). Measured stage by stage:
-
-| BasicSR's DiffJPEG | libjpeg | effect against Pillow |
-|---|---|---|
-| quantization tables transposed (its DCT puts the vertical frequency first, as the tables do) | ITU T.81 tables as listed | the largest: 37.3 to 43.0 dB at quality 50 |
-| tables scaled by a float factor (a fractional quality works, which Real-ESRGAN's uniform draws use), not rounded | `(base * scale + 50) / 100` in integers, clamped to 1-255 (not reached at quality 30-95); quality an integer | +0.7 dB at 30, +0.2 at 75, none at 50; at quality 100 BasicSR's tables are zero (NaN) |
-| black padding to a multiple of 16 | edge pixels repeated | images not a multiple of 16, in the last partial block row and column at quality 30: mean error 5.3 levels against 2.8 elsewhere; 4.7 against 1.0 with the table fixes, 0.85 with edge padding too |
-| Cb and Cr repeated over 2x2 pixels | "fancy" triangle upsampling | +2.3 dB at 30, +4.1 at 95 (after the fixes above) |
-| float samples and output | 8-bit integers throughout | most of the rest: 1-2.5 dB more |
-
-The transposed tables and the black padding are mistakes; the float tables
-look deliberate (continuous quality), and the rest are simplifications.
-`DiffJPEG(libjpeg=True)` takes libjpeg's way for the first four (it is no longer
-BasicSR's result): 45.5, 45.7, 46.0 and 47.6 dB at quality 30, 50, 75 and
-95, at the same speed. Whether training on it changes a model is untested.
-
-Where the time goes in Real-ESRGAN's training step (batch 12 of 400x400
-targets, RTX PRO 4500, BasicSR's code): making the low-resolution batch takes
-127 ms, against 294 ms (fp32) or 165 ms (bf16) for a RealESRNet training step
-(RRDBNet, 23 blocks). 123 ms of that is USMSharp; Real-ESRGAN runs it a
-second time on the 256 crop (49 ms). With these replacements the whole
-degradation takes 7.6 ms (515 to 29 ms at batch 48); most of what remains is
-blur kernels and JPEG, which still matters for compact models
-(SRVGGNetCompact, as in realesr-general-x4v3, trains in 16 ms per batch of
-12). Most of USMSharp's gain comes from splitting the Gaussian: a separable
-version in plain PyTorch takes 4.3 ms. With DiffJPEG replaced too (its two
-calls), the degradation takes 5.7 instead of 8.1 ms, and 25 instead of 31-33
-ms at batch 48 (a later script, which times BasicSR's version at 175 ms: the
-inputs and blur kernels differ). Blur kernels and resizing (BasicSR's
-filter2D and F.interpolate) stay as they are.
-
-## Randomness
-
-Random values come from a counter-based generator in the sampler kernel,
-seeded on every call from PyTorch's CUDA generator: `torch.manual_seed`
-makes runs repeat, and there is no host sync. Values are drawn per image;
-`same_on_batch=True` on a transform gives every image the same values for
-that transform (for `RandomApply`, the same apply/skip decision).
 
 ## Custom ops
 
@@ -584,27 +585,35 @@ has the reference runs and raw data). How to read them:
   is blurred); its per-image loop is the like-for-like comparison. Kornia
   draws per image in one batched call; its RandomResizedCrop does not
   antialias.
-- `RandAugment()` after a crop and flip: 2.88 ms per batch of 256 on an RTX
+- `RandAugment()` after a crop and flip: 2.29 ms per batch of 256 on an RTX
   PRO 4500, against 111 ms for torchvision per image (on the uint8 crop, as
   its reference recipe runs it) and 6.3 ms for torchvision batched with one
   setting for all 256 (the `randaug` recipe in the benchmark script). Each
   op adds a pass and, for the images that choose them, contrast, autocontrast
   and equalize pre-passes.
-- `TrivialAugmentWide()` and `AutoAugment()` after a crop and flip: 1.89
-  and 3.09 ms per batch of 256 on an RTX PRO 4500, against 82 and 95 ms for
+- `TrivialAugmentWide()` and `AutoAugment()` after a crop and flip: 1.58
+  and 2.49 ms per batch of 256 on an RTX PRO 4500, against 82 and 95 ms for
   torchvision per image and 4.8 and 5.2 ms batched with one setting (the
   `trivialaug` and `autoaug` recipes).
-- `TimmRandAugment()` (`rand-m9-mstd0.5-inc1`) after a crop and flip: 2.87
+- `TimmRandAugment()` (`rand-m9-mstd0.5-inc1`) after a crop and flip: 2.22
   ms per batch of 256 on an RTX PRO 4500, against 310 ms for timm's own
   `create_transform` pipeline on Pillow images on one CPU core (AMD EPYC
   9335; a DataLoader spreads that over its workers). The `timmaug` recipe in
   the benchmark script; its baseline gives timm's posterize Pillow 12's
   0-bit result so it runs under Pillow 13.
 - Ops that need a per-image statistic pay for a pre-pass over the images
-  they apply to. Added to the ImageNet recipe (RTX PRO 4500, batch 256,
-  1.69 ms in that run; an ad-hoc script, not in the repository), at `p=0.5`: `RandomAutocontrast` +0.55 ms, `RandomEqualize`
-  +0.65 ms (+1.0 ms at `p=1`), `RandomAdjustSharpness` +0.3 ms (its own
-  pass); `RandomInvert` and `RandomPosterize` cost nothing measurable.
+  they apply to; images that skip the op cost it almost nothing. Added to
+  the ImageNet recipe (RTX PRO 4500, batch 256, 1.68 ms in that run; an
+  ad-hoc script, not in the repository), at `p=0.5`: `RandomAutocontrast`
+  +0.45 ms, `RandomEqualize` +0.69 ms (+1.1 ms at `p=1`),
+  `RandomAdjustSharpness` +0.32 ms (its own pass); `RandomInvert` and
+  `RandomPosterize` cost nothing measurable.
+- A statistic in the first pass would resample the images again. With
+  antialiased bicubic, or bilinear from images at least five times the
+  output's area when the statistic ops run on every image on average, the
+  first pass resamples once into a float32 copy that the pre-pass and the
+  pass read instead (it is freed after the call: about 150 MB at batch 256
+  and 224 px).
 - A warp adds one pass: on an RTX PRO 4500, `RandomRotation(15)` after the
   flip takes the ImageNet recipe from 1.67 to 1.84 ms per batch of 256
   (torchvision per image: 205 to 275 ms; the `rotate` recipe in the
@@ -636,15 +645,16 @@ cores, torch 2.13, torchvision 0.28.
 
 Augmentation of 256 JPEGs decoded on the GPU at their own sizes
 (`benchmarks/compare_pipelines.py --images`, raw data in
-`benchmarks/results/rtx_pro_4500_fgvc_aircraft_*.json`), ms per batch;
+`benchmarks/results/rtx_pro_4500_fgvc_aircraft_*_after_review_2026-11-05.json`),
+ms per batch;
 torchvision runs per image (images of different sizes cannot form one
 batch):
 
 | recipe | SlangVision bilinear | SlangVision bicubic | torchvision bilinear | torchvision bicubic |
 |---|---:|---:|---:|---:|
-| ImageNet: crop, flip, ColorJitter, Normalize | 3.24 | 9.40 | 203 | 206 |
-| eval: Resize, CenterCrop, Normalize | 1.79 | 4.30 | 28.6 | 33.5 |
-| SimCLR | 4.70 | 11.1 | 205 | 210 |
+| ImageNet: crop, flip, ColorJitter, Normalize | 2.34 | 4.36 | 205 | 204 |
+| eval: Resize, CenterCrop, Normalize | 1.76 | 4.27 | 28.3 | 34.6 |
+| SimCLR | 4.03 | 5.34 | 213 | 209 |
 
 Training from scratch on its 6,667 trainval images (100 classes), batch
 256, bf16, ImageNet recipe, images per second over 45 s after warm-up:
@@ -659,8 +669,10 @@ Training from scratch on its 6,667 trainval images (100 classes), batch
 
 - With DALI decoding, SlangVision is within 2% of DALI's own augmentation
   on ResNet-50 and 3% ahead on ResNet-18, with torchvision's results.
-- Bigger photos make bicubic resizing about three times bilinear's cost;
-  it stays 20-60x faster than torchvision's per-image loop.
+- Bigger photos make bicubic resizing about twice bilinear's cost (the
+  eval recipe, which has no statistic, more). torchvision's per-image loop
+  takes 8-90x longer in wall time, much of it in launching small kernels
+  (about 86 per image).
 - Decoding on CPU workers and augmenting on the GPU loses here: the
   workers ship whole decoded photos (about 2 MB each) instead of crops.
 
@@ -674,7 +686,5 @@ Training from scratch on its 6,667 trainval images (100 classes), batch
   at 224x224); split larger batches.
 - Run pipelines from one thread: the GPU device is created by, and tied to,
   the thread that runs the first pipeline (SlangPy devices are thread-affine).
-- Not yet: AugMix, masks and boxes. In `slangvision.sr`: BasicSR's
-  filter2D (cuDNN's depthwise convolution, already fast: a plain Slang
-  kernel was only 1.3x faster). Warps cannot come before a resize or crop, and `RandomRotation`
-  has no `expand=True`.
+- Not yet: AugMix, masks and boxes. Warps cannot come before a resize or
+  crop, and `RandomRotation` has no `expand=True`.
