@@ -25,12 +25,23 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
+      # uv unpacks torch in a few seconds; pip took about 20
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
       - name: Install
+        id: install
         run: |
-          python -m pip install --upgrade pip
           # CPU wheels: the GPU-free tests never touch CUDA
-          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install -e ".[dev]"
+          uv pip install --system torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --system -e ".[dev]"
+          echo "versions=$(python -c 'import mypy.version, torch; print(mypy.version.__version__ + "-" + torch.__version__)')" >> "$GITHUB_OUTPUT"
+      # mypy spends most of its time analysing torch; keep its cache between runs
+      - uses: actions/cache@v6
+        with:
+          path: .mypy_cache
+          key: mypy-${{ matrix.python }}-${{ steps.install.outputs.versions }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: mypy-${{ matrix.python }}-${{ steps.install.outputs.versions }}-
       - name: Check (whitespace, ruff, mypy, pytest -m "not gpu")
         run: scripts/check.sh --no-gpu -ra
       - name: Shell scripts
