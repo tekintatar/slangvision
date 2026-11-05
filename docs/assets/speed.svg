@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="218" viewBox="0 0 760 218" role="img" aria-label="ImageNet augmentation of a batch of 256 on an RTX PRO 4500, milliseconds: SlangVision 1.66, Kornia 19.3, torchvision batched 20.2, torchvision one image at a time 203">
+<style>
+  .t1 { fill: #0b0b0b; } .t2 { fill: #52514e; }
+  .hi { fill: #2a78d6; } .lo { fill: #8c8b86; } .axis { stroke: #8c8b86; }
+  text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  @media (prefers-color-scheme: dark) {
+    .t1 { fill: #f0efec; } .t2 { fill: #c3c2b7; }
+    .hi { fill: #3987e5; } .lo { fill: #6b6a65; } .axis { stroke: #6b6a65; }
+  }
+</style>
+<text x="0" y="18" class="t1" font-size="15" font-weight="600">ImageNet augmentation, batch of 256 (crop, flip, ColorJitter, Normalize)</text>
+<text x="0" y="36" class="t2" font-size="12.5">ms per batch on an NVIDIA RTX PRO 4500, lower is better</text>
+<text x="288" y="66.5" text-anchor="end" class="t1" font-size="13" font-weight="600">SlangVision</text>
+<path d="M300,52.0 H300.0 Q304.0,52.0 304.0,56.0 V68.0 Q304.0,72.0 300.0,72.0 H300 Z" class="hi"/>
+<text x="312.0" y="66.5" class="t1" font-size="13" font-weight="600">1.66 ms</text>
+<text x="288" y="102.5" text-anchor="end" class="t1" font-size="13">Kornia (per-image random)</text>
+<path d="M300,88.0 H330.2266009852217 Q334.2266009852217,88.0 334.2266009852217,92.0 V104.0 Q334.2266009852217,108.0 330.2266009852217,108.0 H300 Z" class="lo"/>
+<text x="342.2266009852217" y="102.5" class="t1" font-size="13">19.3 ms</text>
+<text x="288" y="138.5" text-anchor="end" class="t1" font-size="13">torchvision, batched (one setting per batch)</text>
+<path d="M300,124.0 H331.8226600985222 Q335.8226600985222,124.0 335.8226600985222,128.0 V140.0 Q335.8226600985222,144.0 331.8226600985222,144.0 H300 Z" class="lo"/>
+<text x="343.8226600985222" y="138.5" class="t1" font-size="13">20.2 ms</text>
+<text x="288" y="174.5" text-anchor="end" class="t1" font-size="13">torchvision, one image at a time</text>
+<path d="M300,160.0 H656.0 Q660.0,160.0 660.0,164.0 V176.0 Q660.0,180.0 656.0,180.0 H300 Z" class="lo"/>
+<text x="668.0" y="174.5" class="t1" font-size="13">203 ms</text>
+<line x1="300" y1="46" x2="300" y2="186" class="axis" stroke-width="1"/>
+<text x="0" y="212" class="t2" font-size="11.5">Wall time, median of synced calls; benchmarks/compare_pipelines.py, raw data in benchmarks/results/rtx_pro_4500_2026-11-05.json</text>
+</svg>
