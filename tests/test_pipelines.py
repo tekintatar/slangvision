@@ -20,7 +20,9 @@ if not torch.cuda.is_available():
 import slangpy as spy  # noqa: E402
 
 import slangvision as A  # noqa: E402
-from slangvision.testing import _replay, max_reference_error  # noqa: E402
+from slangvision import sr  # noqa: E402
+from slangvision.testing import (_replay, max_reference_error,  # noqa: E402
+                                 poisson_noise_reference, usm_sharp_reference)
 
 MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 TOL32 = 1e-4        # fp32 output vs torchvision (normalized units)
@@ -1067,3 +1069,132 @@ def test_statistics_after_gaussian_noise_see_the_same_noise(batch):
     out = eq(batch)
     from torchvision.transforms.v2 import functional as F
     assert (out - F.equalize(x)).abs().max().item() < 1e-6
+
+
+# --------------------------------------------------------- super resolution
+@pytest.mark.parametrize("usm, weight, threshold", [
+    (A.USMSharp(), 0.5, 10), (A.USMSharp(radius=7), 0.5, 10), (A.USMSharp(21, sigma=3.0), 1.0, 4),
+], ids=repr)
+def test_usm_sharp_matches_basicsr(usm, weight, threshold, batch):
+    x = batch.float() / 255.0
+    ref = usm_sharp_reference(x, usm, weight, threshold)
+    d = (usm(x, weight=weight, threshold=threshold) - ref).abs()
+    # the mask is a step (|residual| * 255 > threshold): a residual within
+    # float rounding of it can switch, which moves the blurred mask nearby by
+    # up to a tap's weight. Real-ESRGAN's default (51 taps) has no such pixel
+    # here (2e-7 at most); 7 and 21 taps (sharper masks) have a few
+    assert d.mean().item() < 1e-6 and d.max().item() < 2e-3
+    assert (d > 1e-5).float().mean().item() < (1e-6 if usm.radius == 50 else 3e-3)
+    for dtype in (torch.float16, torch.bfloat16):
+        out = usm(x.to(dtype), weight, threshold)
+        assert out.dtype == dtype
+        ref = usm_sharp_reference(x.to(dtype), usm, weight, threshold)
+        assert (out.float() - ref).abs().max().item() < 1e-2
+    assert usm.cuda() is usm and usm.to("cuda") is usm
+
+
+def test_usm_sharp_input_errors(batch):
+    with pytest.raises(ValueError, match="larger than 25"):
+        A.USMSharp()(batch[:, :, :25, :40].float())
+    with pytest.raises(ValueError, match="float16, bfloat16 or float32"):
+        A.USMSharp()(batch)
+    assert A.USMSharp()(batch[:0].float()).shape == (0, 3, 96, 128)
+
+
+def test_gaussian_noise_pt_follows_basicsr_draws():
+    x = torch.full((32, 3, 96, 96), 0.5, device="cuda")
+    torch.manual_seed(5)
+    sigma = torch.rand(32, device="cuda") * 29 + 1                  # BasicSR's draws
+    gray = torch.rand(32, device="cuda") < 0.4
+    torch.manual_seed(5)
+    d = sr.random_add_gaussian_noise_pt(x, sigma_range=(1, 30), gray_prob=0.4, clip=False) - 0.5
+    std = d.flatten(1).std(1) * 255
+    assert ((std - sigma) / sigma).abs().max().item() < 0.03
+    same = (d[:, 0] == d[:, 1]).flatten(1).all(1) & (d[:, 0] == d[:, 2]).flatten(1).all(1)
+    assert torch.equal(same, gray) and 0 < gray.sum() < 32
+    color = d[~gray].transpose(0, 1).flatten(1)
+    assert torch.corrcoef(color)[0, 1].abs().item() < 0.01
+    assert not torch.equal(d[gray][0], d[gray][1])                 # BasicSR would share this field
+
+
+def test_poisson_sampler_has_poisson_moments():
+    # every level k/255 in each channel, so n = 256 and lambda = k / 255 * 256:
+    # both the small-lambda and the PTRS branch
+    ramp = torch.arange(256, device="cuda").float().div(255).repeat(3, 192, 1).expand(16, 3, 192, 256)
+    torch.manual_seed(0)
+    out = sr.add_poisson_noise_pt(ramp.contiguous(), scale=1.0, clip=False)
+    k = ((out - ramp) * 256 + ramp * 256).round()
+    lam = torch.arange(256, device="cuda").float() / 255 * 256
+    per_level = k.permute(3, 0, 1, 2).flatten(1)                     # (256 levels, samples)
+    n = per_level.shape[1]
+    assert ((per_level.mean(1) - lam).abs() <= 4 * (lam / n).sqrt() + 1e-3).all()
+    var = per_level.var(1)
+    assert ((var - lam).abs() <= 6 * lam * (2 / n) ** 0.5 + 2e-2).all()
+    assert (((out - ramp) * 256 + ramp * 256) - k).abs().max().item() < 1e-3   # whole counts / n
+
+
+def test_poisson_noise_pt_matches_basicsr_in_distribution(batch):
+    x = batch.float() / 255.0
+    x = torch.cat([x, x * 0.3]).contiguous()                         # fewer distinct levels too
+    for gray in (0.0, 1.0):
+        torch.manual_seed(1)
+        ours = sr.add_poisson_noise_pt(x, scale=2.0, clip=False, gray_noise=gray) - x
+        ref = poisson_noise_reference(x, 2.0, gray)
+        a, b = ours.flatten(1), ref.flatten(1)
+        n = a.shape[1] / (3 if gray else 1)          # gray noise repeats over the channels
+        se = ((a.var(1) + b.var(1)) / n).sqrt()      # standard error of the mean difference
+        assert ((a.mean(1) - b.mean(1)).abs() < 5 * se).all()
+        assert ((a.var(1) / b.var(1) - 1).abs() < 0.1).all()
+        if gray:
+            # one noise value for all channels ((x + n) - x rounds slightly)
+            assert (ours - ours[:, :1]).abs().max().item() < 1e-6
+
+
+def test_noise_pt_clip_rounds_and_dtypes(batch):
+    x = batch.float() / 255.0
+    for fn in (lambda t, **k: sr.random_add_gaussian_noise_pt(t, (1, 30), 0.4, **k),
+               lambda t, **k: sr.random_add_poisson_noise_pt(t, (0.05, 3), 0.4, **k)):
+        out = fn(x, clip=True, rounds=True)
+        assert out.min().item() >= 0 and out.max().item() <= 1
+        assert ((out * 255) - (out * 255).round()).abs().max().item() < 1e-4
+        for dtype in (torch.float16, torch.bfloat16):
+            assert fn(x.to(dtype)).dtype == dtype
+        assert fn(x[:0]).shape == (0, 3, 96, 128)
+
+
+def test_poisson_sampler_follows_the_exact_pmf():
+    # chi-square against Poisson(lambda) for lambdas on both sides of the
+    # sampler's switch (10) and up to 256, about 50,000 draws each
+    ramp = torch.arange(256, device="cuda").float().div(255).repeat(3, 1024, 1).expand(16, 3, 1024, 256)
+    ramp = ramp.contiguous()
+    torch.manual_seed(2)
+    k = ((sr.add_poisson_noise_pt(ramp, clip=False) - ramp) * 256 + ramp * 256).round()
+    for level in (3, 9, 10, 11, 50, 128, 200, 255):
+        lam = level / 255 * 256
+        draws = k[..., level].flatten().long()
+        counts = torch.bincount(draws, minlength=int(lam * 3) + 30).double()
+        ks = torch.arange(len(counts), device="cuda", dtype=torch.float64)
+        pmf = torch.exp(ks * math.log(lam) - lam - torch.lgamma(ks + 1))
+        expected = pmf * len(draws)
+        keep = expected >= 5                                      # bins with enough draws
+        chi2 = ((counts[keep] - expected[keep]) ** 2 / expected[keep]).sum().item()
+        df = int(keep.sum()) - 1
+        assert chi2 < df + 6 * (2 * df) ** 0.5, (level, chi2, df)
+
+
+def test_fractional_gray_noise_blends_like_basicsr():
+    x = torch.full((8, 3, 64, 64), 0.5, device="cuda")
+    torch.manual_seed(0)
+    d = sr.add_gaussian_noise_pt(x, sigma=20.0, gray_noise=0.3, clip=False) - 0.5
+    # colour * 0.7 + gray * 0.3: variance (0.49 + 0.09) sigma^2, channels correlated 0.09 / 0.58
+    assert abs(d.std().item() * 255 / 20.0 - 0.58 ** 0.5) < 0.01
+    corr = torch.corrcoef(torch.stack([d[:, 0].flatten(), d[:, 1].flatten()]))[0, 1].item()
+    assert abs(corr - 0.09 / 0.58) < 0.02
+    torch.manual_seed(0)
+    p = sr.add_poisson_noise_pt(x, scale=1.0, clip=False, gray_noise=0.3) - 0.5
+    assert torch.isfinite(p).all() and 0 < p.std().item()
+
+
+def test_usm_sharp_takes_basicsr_radii():
+    np = pytest.importorskip("numpy")
+    assert A.USMSharp(np.int64(50)).size == 51 and A.USMSharp(0).size == 1

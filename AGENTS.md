@@ -41,7 +41,11 @@ notes (interpreter paths, GPU hosts, identities) in your own untracked
   `geometry.slang`, `neighbourhood.slang`, `pil.slang` (Pillow's ops for
   timm's RandAugment), `sources.slang`, `statistics.slang`, `warp.slang`. `_runtime.py`
   joins them (core first) into one source, so a new file needs no
-  registration and the split has no run-time cost.
+  registration and the split has no run-time cost. `shaders/kernels/` holds
+  stand-alone kernels outside that library: `mix.slang` (mixing.py) and
+  `usm.slang`, `noise.slang` (sr.py).
+- `src/slangvision/sr.py` — drop-in replacements for BasicSR's GPU
+  degradation functions (Real-ESRGAN's training step), on float batches.
 
 ## Conventions & gotchas (expensive to rediscover)
 

@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- `slangvision.sr`: drop-in replacements for BasicSR's GPU degradation
+  functions, which Real-ESRGAN calls in its training step: `USMSharp` (the
+  same 51-tap Gaussian as a row and a column pass: 1.5 ms instead of 118 ms
+  per batch of 12 at 400x400 on an RTX PRO 4500), `add_gaussian_noise_pt`,
+  `random_add_gaussian_noise_pt`, `add_poisson_noise_pt` and
+  `random_add_poisson_noise_pt` (per-image values from the same torch draws
+  as BasicSR; Poisson noise 0.5 ms instead of 7.2 ms).
 - `GaussianNoise` (torchvision's: `mean + sigma * N(0, 1)` per value, then
   clipped), new noise per pixel, channel and image from SlangVision's own
   generator; a colour op, so statistics after it (equalize, autocontrast)

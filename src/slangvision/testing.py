@@ -16,6 +16,7 @@ module.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 from . import transforms as T
@@ -259,3 +260,62 @@ def _pad(F: Any, img: "torch.Tensor", padding: list[int], t: Any) -> "torch.Tens
     if t.padding_mode == "constant":
         return F.pad(img, padding, fill=list(t.fill), padding_mode="constant")
     return F.pad(img, padding, padding_mode=t.padding_mode)
+
+
+# ------------------------------------------------------- super resolution
+def usm_sharp_reference(x: "torch.Tensor", usm: Any, weight: float = 0.5,
+                        threshold: float = 10) -> "torch.Tensor":
+    """BasicSR's USMSharp.forward (basicsr/utils/img_process_util.py,
+    Apache-2.0) for the slangvision.USMSharp ``usm``: its 2D kernel (the
+    float64 outer product rounded to float32), filter2D's reflect padding and
+    conv2d, here in float32 with TF32 off (PyTorch's default lets cuDNN use
+    TF32, which BasicSR's own result then carries)."""
+    import torch
+    import torch.nn.functional as F
+
+    k1 = torch.tensor(usm.taps, dtype=torch.float64)
+    kernel = torch.outer(k1, k1).float().to(x.device)
+    k = kernel.shape[-1]
+
+    def filter2d(img: "torch.Tensor") -> "torch.Tensor":
+        b, c, h, w = img.shape
+        img = F.pad(img, (k // 2, k // 2, k // 2, k // 2), mode="reflect")
+        return F.conv2d(img.reshape(b * c, 1, *img.shape[-2:]),
+                        kernel.view(1, 1, k, k)).view(b, c, h, w)
+
+    allow = torch.backends.cudnn.allow_tf32
+    torch.backends.cudnn.allow_tf32 = False
+    try:
+        img = x.float()
+        residual = img - filter2d(img)
+        mask = (torch.abs(residual) * 255 > threshold).float()
+        soft = filter2d(mask)
+        sharp = torch.clip(img + weight * residual, 0, 1)
+        return soft * sharp + (1 - soft) * img
+    finally:
+        torch.backends.cudnn.allow_tf32 = allow
+
+
+def poisson_noise_reference(img: "torch.Tensor", scale: Any = 1.0,
+                            gray_noise: Any = 0) -> "torch.Tensor":
+    """BasicSR's generate_poisson_noise_pt (basicsr/data/degradations.py,
+    Apache-2.0) with torch.poisson: the noise, for comparing distributions
+    (torch's Poisson values cannot be replayed)."""
+    import torch
+    from torchvision.transforms.v2.functional import rgb_to_grayscale
+
+    b, _, h, w = img.shape
+
+    def levels(t: "torch.Tensor") -> "torch.Tensor":
+        counts = [len(torch.unique(t[i])) for i in range(b)]
+        return t.new_tensor([2.0 ** math.ceil(math.log2(n)) for n in counts]).view(b, 1, 1, 1)
+
+    g = torch.as_tensor(gray_noise, dtype=img.dtype, device=img.device).expand(b).view(b, 1, 1, 1)
+    q = torch.clamp((rgb_to_grayscale(img) * 255.0).round(), 0, 255) / 255.0
+    vals = levels(q)
+    noise_gray = (torch.poisson(q * vals) / vals - q).expand(b, 3, h, w)
+    q = torch.clamp((img * 255.0).round(), 0, 255) / 255.0
+    vals = levels(q)
+    noise = torch.poisson(q * vals) / vals - q
+    noise = noise * (1 - g) + noise_gray * g
+    return noise * torch.as_tensor(scale, dtype=img.dtype, device=img.device).expand(b).view(b, 1, 1, 1)

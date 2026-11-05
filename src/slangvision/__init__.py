@@ -28,6 +28,7 @@ from . import _runtime  # noqa: F401
 from ._base import Choice, ColorOp, NeighbourhoodOp, Uniform
 from ._compile import Compose
 from .mixing import CutMix, MixUp, MixUpCutMix
+from .sr import USMSharp
 from .transforms import (
     AutoAugment,
     CenterCrop,
@@ -97,4 +98,5 @@ __all__ = [
     "TimmRandAugment",
     "TrivialAugmentWide",
     "Uniform",
+    "USMSharp",
 ]

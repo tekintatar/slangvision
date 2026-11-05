@@ -326,6 +326,61 @@ One Slang kernel per call writes the mixed batch (float16, bfloat16 or
 float32, as given); the parameters come from torch's CPU generator, so there
 is no GPU sync.
 
+## Super resolution
+
+Real-ESRGAN, and the diffusion SR models that reuse its degradation, make
+their low-resolution inputs on the GPU in the training step with BasicSR's
+functions. `slangvision.sr` has drop-in replacements with the same names,
+arguments and results; change the import:
+
+```py
+from slangvision.sr import USMSharp, random_add_gaussian_noise_pt, random_add_poisson_noise_pt
+```
+
+- `USMSharp(radius=50, sigma=0)`, called `usm(img, weight=0.5,
+  threshold=10)`: BasicSR's unsharp masking of the targets. `radius` is
+  BasicSR's (the Gaussian's size, made odd), with OpenCV's kernel; reflect
+  padding, so images must be larger than half the size. BasicSR convolves the
+  51x51 Gaussian directly; here it runs as a row and a column pass, with the
+  same result (within 2.4e-7 at the default size; with smaller kernels a
+  residual within float rounding of the threshold can switch the mask,
+  moving nearby values by up to 2e-3). `.cuda()` and `.to()` return the
+  object, as BasicSR's module is used.
+- `add_gaussian_noise_pt(img, sigma, gray_noise, clip, rounds)` and
+  `random_add_gaussian_noise_pt(img, sigma_range, gray_prob, clip, rounds)`:
+  per-image sigma (0-255 scale) and gray flag, drawn with the same torch
+  calls as BasicSR, so the same seed gives the same values (a fractional
+  `gray_noise` blends colour and gray noise, as in BasicSR). The noise
+  itself comes from SlangVision's generator, keyed by one more draw from the
+  device's torch generator, so later draws there differ from a BasicSR run.
+  BasicSR draws one gray noise field and shares it across the batch; here
+  each image gets its own.
+- `add_poisson_noise_pt(img, scale, clip, rounds, gray_noise)` and
+  `random_add_poisson_noise_pt(img, scale_range, gray_prob, clip, rounds)`:
+  BasicSR's shot noise. Each value rounded to 1/255 becomes Poisson(q·n)/n,
+  n the image's number of distinct values rounded up to a power of two
+  (gray noise from the grayscale image, the same in all channels). BasicSR
+  counts the values with `torch.unique` in a Python loop over the batch; one
+  pass marks the levels here. Poisson values come from a sampler that
+  matches the exact distribution (tested against the pmf up to lambda 256).
+
+Inputs are (B, 3, H, W) float16, bfloat16 or float32 CUDA tensors (BasicSR
+also takes other channel counts); outputs keep the dtype and carry no
+gradients (BasicSR's are differentiable; Real-ESRGAN calls them under
+`no_grad`).
+
+Where the time goes in Real-ESRGAN's training step (batch 12 of 400x400
+targets, RTX PRO 4500, BasicSR's code): making the low-resolution batch takes
+127 ms, against 294 ms (fp32) or 165 ms (bf16) for a RealESRNet training step
+(RRDBNet, 23 blocks). 123 ms of that is USMSharp; Real-ESRGAN runs it a
+second time on the 256 crop (49 ms). With these replacements the whole
+degradation takes 7.6 ms (515 to 29 ms at batch 48); most of what remains is
+blur kernels and JPEG, which still matters for compact models
+(SRVGGNetCompact, as in realesr-general-x4v3, trains in 16 ms per batch of
+12). Most of USMSharp's gain comes from splitting the Gaussian: a separable
+version in plain PyTorch takes 4.3 ms. Blur kernels, resizing and JPEG
+(BasicSR's filter2D, F.interpolate and DiffJPEG) stay as they are.
+
 ## Randomness
 
 Random values come from a counter-based generator in the sampler kernel,
@@ -520,5 +575,7 @@ Training from scratch on its 6,667 trainval images (100 classes), batch
   at 224x224); split larger batches.
 - Run pipelines from one thread: the GPU device is created by, and tied to,
   the thread that runs the first pipeline (SlangPy devices are thread-affine).
-- Not yet: AugMix, masks and boxes. Warps cannot come before a resize or crop, and `RandomRotation`
+- Not yet: AugMix, masks and boxes. In `slangvision.sr`: BasicSR's
+  DiffJPEG (its filter2D is cuDNN's depthwise convolution, already fast:
+  a plain Slang kernel was only 1.3x faster). Warps cannot come before a resize or crop, and `RandomRotation`
   has no `expand=True`.
