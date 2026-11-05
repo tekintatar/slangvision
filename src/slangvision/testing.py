@@ -61,7 +61,8 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
     import torchvision.transforms.v2.functional as F
     from torchvision.transforms import InterpolationMode
 
-    _MODES.update(bilinear=InterpolationMode.BILINEAR, bicubic=InterpolationMode.BICUBIC)
+    _MODES.update(bilinear=InterpolationMode.BILINEAR, bicubic=InterpolationMode.BICUBIC,
+                  nearest=InterpolationMode.NEAREST)
 
     if isinstance(t, T.RandomResizedCrop):
         left, top, w, h = (int(v) for v in row[b.geo:b.geo + 4])
@@ -84,6 +85,23 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
         return F.vertical_flip(img) if row[b.k(t)] > 0.5 else img
     if isinstance(t, T.RandomHorizontalFlip):
         return F.horizontal_flip(img) if row[b.k(t)] > 0.5 else img
+    if isinstance(t, T._Warp):
+        k = b.k(t)
+        if row[k] <= 0.5:
+            return img
+        raw = row[k + 9:k + 9 + t._raw]
+        mode, fill = _MODES[t.interpolation], list(t.fill)
+        center = None if t.center is None else list(t.center)
+        if isinstance(t, T.RandomRotation):
+            return F.rotate(img, raw[0], interpolation=mode, center=center, fill=fill)
+        if isinstance(t, T.RandomAffine):
+            angle, tx, ty, scale, shx, shy = raw
+            return F.affine(img, angle, [int(tx), int(ty)], scale, [shx, shy],
+                            interpolation=mode, fill=fill, center=center)
+        h, w = img.shape[-2:]
+        start = [[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]]
+        end = [[int(raw[2 * i]), int(raw[2 * i + 1])] for i in range(4)]
+        return F.perspective(img, start, end, interpolation=mode, fill=fill)
     if isinstance(t, T.ColorJitter):
         k = b.k(t)
         fns = [F.adjust_brightness, F.adjust_contrast, F.adjust_saturation, F.adjust_hue]

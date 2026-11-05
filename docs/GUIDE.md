@@ -66,9 +66,12 @@ the GPU device once per process); later calls reuse the compiled kernels.
 | `RandomCrop(size, padding=None, pad_if_needed=False, fill=0, padding_mode="constant")` | position drawn per image; `fill` is on the 0-1 scale |
 | `Pad(padding, fill=0, padding_mode="constant")` | `fill` is on the 0-1 scale |
 | `RandomHorizontalFlip(p=0.5)`, `RandomVerticalFlip(p=0.5)` | decided per image |
+| `RandomRotation(degrees, interpolation="nearest", expand=False, center=None, fill=0)` | angle drawn per image; `expand=True` is not supported (it changes each image's size); `fill` is on the 0-1 scale |
+| `RandomAffine(degrees, translate=None, scale=None, shear=None, interpolation="nearest", fill=0, center=None)` | angle, translation, scale and shear drawn per image; `fill` is on the 0-1 scale |
+| `RandomPerspective(distortion_scale=0.5, p=0.5, interpolation="bilinear", fill=0)` | corners drawn per image; `fill` is on the 0-1 scale |
 | `ColorJitter(brightness, contrast, saturation, hue)` | factors and op order drawn per image |
-| `RandomApply(transforms, p=0.5)` | decided per image; holds colour ops, or exactly one blur or `NeighbourhoodOp` (not flips: they have their own `p`) |
-| `RandomChoice(transforms, p=None)` | chosen per image (weights `p`, equal by default); holds colour ops and at most one blur or `NeighbourhoodOp` |
+| `RandomApply(transforms, p=0.5)` | decided per image; holds colour ops, or exactly one blur, warp or `NeighbourhoodOp` (not flips: they have their own `p`) |
+| `RandomChoice(transforms, p=None)` | chosen per image (weights `p`, equal by default); holds colour ops and at most one blur, warp or `NeighbourhoodOp` |
 | `RandomGrayscale(p=0.1)` | decided per image; output keeps 3 channels |
 | `GaussianBlur(kernel_size, sigma=(0.1, 2.0))` | sigma drawn per image; the kernel radius must be smaller than the image, as torchvision's reflect padding requires |
 | `RandomSolarize(threshold, p=0.5)` | `threshold` is on the 0-1 scale (0.5, not 128) |
@@ -81,6 +84,16 @@ torchvision's filters: with `antialias=True` (the default) PyTorch's
 antialias kernels, cubic with a = -0.5 like PIL, and without it classic
 bicubic with a = -0.75. Bicubic float output can overshoot [0, 1], as
 torchvision's does; it costs about twice as much as bilinear.
+
+The warps (`RandomRotation`, `RandomAffine`, `RandomPerspective`) sample
+the image as it is at their point of the pipeline with `"nearest"` or
+`"bilinear"` interpolation, as torchvision does for tensors, and keep its
+size. Each runs as its own pass, and costs about 0.2 ms per batch of 256 at
+224x224 (see Performance). Pixels that come from outside the image get
+`fill` the way torchvision's grid sampling does: with bilinear
+interpolation, edge pixels blend toward `fill` (with `fill=0`, toward
+black). A CIFAR recipe with rotation is `[RandomCrop(32, padding=4),
+RandomHorizontalFlip(), RandomRotation(15), Normalize(...)]`.
 
 The CIFAR recipe is `[RandomCrop(32, padding=4), RandomHorizontalFlip(),
 Normalize(...)]`. DeiT III's ThreeAugment is
@@ -110,9 +123,12 @@ Pipeline rules, checked when you build the `Compose`:
   geometric transform, all input images must be the same size. A
   `RandomCrop` larger than a (padded) image raises `ValueError`, as in
   torchvision.
-- Flips go anywhere after the geometric transforms and
-  before any `NeighbourhoodOp` you define (they commute with colour ops and
-  with Gaussian blur).
+- Warps (`RandomRotation`, `RandomAffine`, `RandomPerspective`) come after
+  the resize, crops and pads, in any order with the other transforms; a
+  warp before them raises `ValueError`.
+- Flips go anywhere after the geometric transforms, but not after a
+  `NeighbourhoodOp` you define unless a warp comes between them. They commute
+  with colour ops and Gaussian blur; a flip after a warp is applied after it.
 - Each transform object appears once; create a second one to use it twice.
 - `Normalize`, if present, comes after every transform except
   `RandomErasing`, which comes last (several erase several boxes, in order).
@@ -120,8 +136,8 @@ Pipeline rules, checked when you build the `Compose`:
 
 `Compose(transforms, dtype=torch.float16)` is the default; `torch.bfloat16`
 (for models trained in bfloat16, at the same speed as float16) and
-`torch.float32` are the other choices. Passes between blurs and the final
-output keep float16 (float32 for float32 output). The output is a
+`torch.float32` are the other choices. Passes between blurs, warps and the
+final output keep float16 (float32 for float32 output). The output is a
 contiguous `(B, 3, H, W)` tensor; for `channels_last`, call `.to(...)` on it.
 
 ## Inputs and decoders
@@ -323,6 +339,8 @@ imports this module. `pipe.source` shows the generated Slang.
 | float16 output | fp16 rounding of the output, up to about 2e-3 at normalized values |
 | bfloat16 output | torchvision's value rounded to bfloat16 (8 significant bits), as `.to(torch.bfloat16)` rounds it; at most one bfloat16 step away (about 0.016 at normalized values near 2.6) where the two land on either side of a rounding edge, which pipelines with a blur do more often |
 | threshold ops (`RandomSolarize`) | a value landing exactly on the threshold may be inverted on one side and not the other; all other values match |
+| warps with `interpolation="nearest"` | about 1 pixel in 100,000 (1 in 20,000 for `RandomPerspective`) takes the neighbouring source pixel: torchvision computes the sampling positions in float32 with a different rounding, so a position within about 1e-5 pixels of a pixel boundary can go either way. Bilinear warps match like the other ops |
+| float16 output after a warp or blur | the image between passes is float16 too, so colour ops after it can scale that rounding (up to about 8e-3 at normalized values with `ColorJitter(0.4, 0.4, 0.4, 0.1)` after a warp) |
 
 torchvision's uint8 path rounds after every op; this matches its float path.
 
@@ -338,6 +356,10 @@ has the reference runs and raw data). How to read them:
   is blurred); its per-image loop is the like-for-like comparison. Kornia
   draws per image in one batched call; its RandomResizedCrop does not
   antialias.
+- A warp adds one pass: on an RTX PRO 4500, `RandomRotation(15)` after the
+  flip takes the ImageNet recipe from 1.67 to 1.84 ms per batch of 256
+  (torchvision per image: 205 to 275 ms; the `rotate` recipe in the
+  benchmark script).
 - Each call also has a fixed host-side cost of about 0.2 ms (SlangPy
   kernel dispatches from Python), whatever the image size: the gap between
   wall and GPU time in the benchmark. It overlaps with the GPU running the
@@ -403,5 +425,6 @@ Training from scratch on its 6,667 trainval images (100 classes), batch
   at 224x224); split larger batches.
 - Run pipelines from one thread: the GPU device is created by, and tied to,
   the thread that runs the first pipeline (SlangPy devices are thread-affine).
-- Not yet: RandAugment, TrivialAugment and the ops they use, affine and
-  perspective geometry, MixUp and CutMix, masks and boxes.
+- Not yet: RandAugment, TrivialAugment and the ops they use, masks and
+  boxes. Warps cannot come before a resize or crop, and `RandomRotation`
+  has no `expand=True`.

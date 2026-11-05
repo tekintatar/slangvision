@@ -148,7 +148,7 @@ class Binding:
 class Transform:
     """Base of every augmentation transform."""
 
-    #: geometry | flip | pointwise | neighbourhood | normalize
+    #: geometry | flip | pointwise | neighbourhood | warp | normalize | erase
     _kind = "pointwise"
     same_on_batch = False
 

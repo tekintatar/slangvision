@@ -17,7 +17,10 @@ output and 4e-3 for float16 output, in normalized units.
 | Pad | reference: constant fill on a batch, reflect before CenterCrop, edge before RandomCrop, uneven padding before flips |
 | RandomVerticalFlip | reference: `p=1` alone and after uneven padding, random with RandomCrop and RandomHorizontalFlip |
 | RandomChoice | reference: ThreeAugment choice (grayscale, solarize, blur), contrast or blur (contrast mean after the choice), weighted, inside RandomApply, nested RandomChoice; sampled frequencies follow `p`; `same_on_batch` gives one choice |
-| RandomHorizontalFlip | reference: `p=1`, two flips |
+| RandomHorizontalFlip | reference: `p=1`, two flips, before, after and between warps, after your NeighbourhoodOp with a warp between |
+| RandomRotation | reference (bilinear): on resized crops, about an off-centre `center`, between flips with ColorJitter after it, CIFAR-style after RandomCrop, inside RandomChoice after a perspective; nearest: fewer than 1e-3 of values differ (the test's bound; measured separately: about 1e-5 of pixels, where torchvision's float32 grid rounds positions near pixel boundaries differently); angles stay in range; `same_on_batch` shares the angle |
+| RandomAffine | reference (bilinear): translate, scale, x/y shear and RGB fill; full-turn rotation with scale, shear and `center` on an odd-sized image; inside RandomApply before a blur and a flip; nearest as for RandomRotation; whole-pixel translations rounded (not truncated: the share of 0) within torchvision's bounds, scale and shear in range |
+| RandomPerspective | reference (bilinear, so the corners' coefficients are torchvision's least squares): `p=0.7`, full distortion with fill 0.5, after a blur and before RandomErasing; nearest as for RandomRotation; corner positions span exactly torchvision's bounds; `p` rate |
 | ColorJitter | reference: each factor alone, all four with random order, inside RandomApply, after a blur (mean of the blurred image) |
 | RandomApply | reference: colour ops, one blur |
 | RandomGrayscale | reference |
@@ -108,3 +111,7 @@ validation of newer code.
 - 2026-11-05, RandomErasing and MixUp/CutMix/MixUpCutMix added, same host
   and stack (box scripts' `CUDA_PATH`): 182 passed (the GPU-free mixing
   tests also run on CPU torch in CI).
+- 2026-11-05, RandomRotation/RandomAffine/RandomPerspective (the warp
+  pass) and the review fixes, same host and stack (box scripts' `CUDA_PATH`): 216 passed.
+  Benchmark: `rotate` recipe, raw data in
+  `benchmarks/results/rtx_pro_4500_rotate_2026-11-05.json`.

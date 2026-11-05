@@ -14,6 +14,8 @@
 #   simclr    RandomResizedCrop(224) + flip + RandomApply(ColorJitter, 0.8)
 #             + RandomGrayscale(0.2) + RandomApply(GaussianBlur(23), 0.5)
 #             + RandomSolarize(0.5, 0.2) + Normalize
+#   rotate    imagenet with RandomRotation(15) (nearest, as torchvision's
+#             default) after the flip
 # Input: a batch of photo-like 512x384 uint8 images already on the GPU, or
 # with --images DIR the first --batch JPEGs under DIR decoded on the GPU as a
 # list of their own sizes (then torchvision runs per image only: different
@@ -38,6 +40,12 @@
 #   imagenet   1.71 (1.47)   19.9 (20.1)         202 (35.7)              19.2 (14.0)
 #   eval       0.89 (0.67)   5.61 (5.85)         28.6 (7.64)             -
 #   simclr     3.16 (2.89)   20.5 (27.1)         230 (41.7)              30.3 (23.8)
+#
+# rotate, added 2026-11-05 on the same box (rtx_pro_4500_rotate_2026-11-05.json;
+# slangvision's other recipes matched the run above within 3%, torchvision's
+# per-image loop within 8%, its batched SimCLR GPU time varied more):
+#
+#   rotate     1.84 (1.62)   23.5 (23.2)         275 (43.2)              -
 #
 # Honest read:
 # - torchvision's batch mode draws ONE random setting for the whole batch, so
@@ -89,6 +97,9 @@ def ours(interp: str = "bilinear") -> dict:
                              A.RandomGrayscale(p=0.2),
                              A.RandomApply([A.GaussianBlur(23)], p=0.5),
                              A.RandomSolarize(0.5, p=0.2), A.Normalize(MEAN, STD)]),
+        "rotate": A.Compose([A.RandomResizedCrop(224, interpolation=interp),
+                             A.RandomHorizontalFlip(), A.RandomRotation(15),
+                             A.ColorJitter(0.4, 0.4, 0.4, 0.1), A.Normalize(MEAN, STD)]),
     }
 
 
@@ -107,6 +118,8 @@ def torchvision_recipes(interp: str = "bilinear") -> dict:
                                      v2.RandomGrayscale(p=0.2),
                                      v2.RandomApply([v2.GaussianBlur(23)], p=0.5),
                                      v2.RandomSolarize(128, p=0.2)] + tail),
+        "rotate": v2.Compose(crop + [v2.RandomRotation(15), v2.ColorJitter(0.4, 0.4, 0.4, 0.1)]
+                             + tail),
     }
 
 

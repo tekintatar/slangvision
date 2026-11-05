@@ -9,12 +9,12 @@
   GaussianBlur, RandomSolarize, Normalize. CUDA only.
 - **Since 0.1.0** (unreleased): bfloat16 output, bicubic resizing,
   RandomCrop (padding modes), Pad, RandomVerticalFlip, RandomChoice,
-  RandomErasing, MixUp/CutMix. Next, by usage in common training recipes: a warp
-  pass (RandomRotation/Affine/Perspective), then the policies below.
+  RandomErasing, MixUp/CutMix, RandomRotation/RandomAffine/RandomPerspective
+  (a warp pass). Next, by usage in common training recipes: per-image
+  statistics and the policy ops, then the policies below.
 - **Phase 2 — policies**, if phase 1 is used: complete RandAugment and
-  TrivialAugmentWide (their geometric ops through a per-image 3x3 matrix and
-  one resample, which also brings RandomAffine/RandomRotation/
-  RandomPerspective) and the ops they need (sharpness, posterize, invert,
+  TrivialAugmentWide (their geometric ops through the warp pass) and the ops
+  they need (sharpness, posterize, invert,
   autocontrast, equalize). Decide first whether posterize and
   equalize match torchvision's float or uint8 paths (RandAugment usually
   runs on uint8).

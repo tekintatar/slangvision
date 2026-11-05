@@ -92,7 +92,8 @@ versions it saw.
 ## Transforms
 
 `RandomResizedCrop`, `Resize`, `CenterCrop`, `RandomCrop`, `Pad`,
-`RandomHorizontalFlip`, `RandomVerticalFlip`, `ColorJitter`,
+`RandomHorizontalFlip`, `RandomVerticalFlip`, `RandomRotation`,
+`RandomAffine`, `RandomPerspective`, `ColorJitter`,
 `RandomGrayscale`, `GaussianBlur`, `RandomSolarize`, `RandomApply`,
 `RandomChoice`, `Normalize` and `RandomErasing`, with torchvision's names and
 parameters,
@@ -193,8 +194,8 @@ script that is not in this repository. Method and caveats are in the
 
 - CUDA only (Linux with an NVIDIA GPU), and not inside CUDA graph capture.
 - Run pipelines from one thread (SlangPy devices are thread-affine).
-- Not yet: RandAugment, TrivialAugment and the ops they use, affine and
-  perspective geometry, MixUp and CutMix, masks and boxes.
+- Not yet: RandAugment, TrivialAugment and the ops they use, masks and
+  boxes.
 
 ## Related
 

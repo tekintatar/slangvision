@@ -318,6 +318,232 @@ class RandomVerticalFlip(_Flip):
     _axis = 1
 
 
+# ------------------------------------------------------------------ warps
+# A warp resamples the image as it is at its point of the pipeline (after
+# the resize and crops) and keeps its size. Each starts a new pass that
+# samples the previous one. Its slots: applied, the eight coefficients of
+# shaders/warp.slang (computed by the sampler), then its raw random values
+# for the torchvision reference.
+def _dlit(x: float) -> str:
+    """A Slang double literal."""
+    return f"{float(x)!r}l"
+
+
+def _warp_interpolation(value: Any, name: str) -> str:
+    mode = str(getattr(value, "value", value)).lower()
+    if mode not in ("nearest", "bilinear"):
+        raise ValueError(f"{name}: interpolation must be nearest or bilinear (as in "
+                         f"torchvision for tensors), got {value!r}")
+    return mode
+
+
+def _angles(value: Any, name: str, sizes: tuple[int, ...]) -> tuple[float, ...]:
+    """torchvision's _setup_angle: a number d means (-d, d)."""
+    if isinstance(value, numbers.Real) and not isinstance(value, bool):
+        if value < 0:
+            raise ValueError(f"{name}: a single number must be non-negative, got {value}")
+        vals = [-float(value), float(value)]
+    elif isinstance(value, Sequence) and not isinstance(value, str) and len(value) in sizes:
+        vals = [float(v) for v in value]
+    else:
+        raise ValueError(f"{name}: must be a number or a sequence of "
+                         f"{' or '.join(map(str, sizes))} numbers, got {value!r}")
+    if not all(math.isfinite(v) for v in vals):
+        raise ValueError(f"{name}: values must be finite, got {value!r}")
+    return tuple(vals)
+
+
+def _pair(value: Any, name: str) -> tuple[float, float] | None:
+    if value is None:
+        return None
+    if not (isinstance(value, Sequence) and len(value) == 2):
+        raise ValueError(f"{name}: must be a sequence of two numbers, got {value!r}")
+    a, b = float(value[0]), float(value[1])
+    if not (math.isfinite(a) and math.isfinite(b)):
+        raise ValueError(f"{name}: values must be finite, got {value!r}")
+    return a, b
+
+
+class _Warp(Transform):
+    _kind = "warp"
+    p = 1.0
+    interpolation = "nearest"
+    fill = (0.0, 0.0, 0.0)
+    center: tuple[float, float] | None = None
+    _raw = 0            # raw random values kept for the reference
+
+    def _slot_count(self) -> int:
+        return 9 + self._raw
+
+    def _draw(self, k: int, rng: str) -> list[str]:
+        """Sampler lines that set `bool on`, fill `double m[8]` and write the
+        raw values from slot k + 9 on (CW, CH: the image size here)."""
+        raise NotImplementedError
+
+    def _center(self) -> str:
+        if self.center is None:
+            return "double cx = 0.0l; double cy = 0.0l;"
+        return (f"double cx = {_dlit(self.center[0])} - 0.5l * double(CW); "
+                f"double cy = {_dlit(self.center[1])} - 0.5l * double(CH);")
+
+    def _sample(self, b: Binding, rng: str) -> list[str]:
+        k = b.k(self)
+        return ["{", "    bool on = true; double m[8];",
+                *[f"    {ln}" for ln in self._draw(k, rng)],
+                f"    p[uint2({k}, b)] = on ? 1.0 : 0.0;",
+                f"    for (int i = 0; i < 8; ++i) p[uint2({k + 1} + i, b)] = float(m[i]);",
+                "}"]
+
+    def _pre(self, b: Binding) -> list[str] | None:
+        return None
+
+    def _input(self, b: Binding) -> list[str]:
+        """Body of the warp pass's input function (src, p, b, x, y, OW, OH in scope)."""
+        k = b.k(self)
+        f0, f1, f2 = (lit(v) for v in self.fill)
+        lines = ["MidImage img = { src, b, OW, OH, 1 };"]
+        if self.p < 1.0:
+            lines.append(f"if (!({P(k)} > 0.5)) return load_mid(src, x, y, b);")
+        return lines + [
+            "float fx = float(x); float fy = float(y);",
+            f"float den = {P(k + 7)} * fx + {P(k + 8)} * fy + 1.0;",
+            f"float u = ({P(k + 1)} * fx + {P(k + 2)} * fy + {P(k + 3)}) / den;",
+            f"float v = ({P(k + 4)} * fx + {P(k + 5)} * fy + {P(k + 6)}) / den;",
+            f"return warp_sample(img, u, v, {int(self.interpolation == 'nearest')}, "
+            f"float4({f0}, {f1}, {f2}, 0.0));"]
+
+
+class RandomRotation(_Warp):
+    """torchvision RandomRotation: rotate by an angle drawn per image from
+    ``degrees`` (d means (-d, d)), counter-clockwise, about the image centre or
+    ``center`` (x, y in pixels). ``interpolation`` is ``"nearest"`` (default,
+    as in torchvision) or ``"bilinear"``; corners outside the image get
+    ``fill`` (0-1 scale). ``expand=True`` is not supported: it changes each
+    image's size."""
+
+    _raw = 1
+
+    def __init__(self, degrees: Any, interpolation: Any = "nearest", expand: bool = False,
+                 center: Any = None, fill: Any = 0, same_on_batch: bool = False):
+        self.degrees = _angles(degrees, "RandomRotation: degrees", (2,))
+        if expand:
+            raise ValueError("RandomRotation: expand=True is not supported (it changes each "
+                             "image's size)")
+        self.interpolation = _warp_interpolation(interpolation, "RandomRotation")
+        self.center = _pair(center, "RandomRotation: center")
+        self.fill = _fill3(fill, "RandomRotation")
+        self.same_on_batch = bool(same_on_batch)
+
+    def _draw(self, k: int, rng: str) -> list[str]:
+        lo, hi = self.degrees
+        return [f"float ang = urand({rng}, {lit(lo)}, {lit(hi)});",
+                self._center(),
+                # torchvision's rotate passes -angle to the affine matrix
+                "affine_coeffs(CW, CH, -double(ang), 0.0l, 0.0l, 1.0l, 0.0l, 0.0l, cx, cy, m);",
+                f"p[uint2({k + 9}, b)] = ang;"]
+
+    def __repr__(self) -> str:
+        return (f"RandomRotation(degrees={self.degrees}, interpolation={self.interpolation!r}, "
+                f"center={self.center}, fill={self.fill})")
+
+
+class RandomAffine(_Warp):
+    """torchvision RandomAffine: rotation by ``degrees``, translation by up to
+    ``translate`` (fractions of width and height, whole pixels), ``scale`` and
+    ``shear`` (degrees: d, (min, max) along x, or (xmin, xmax, ymin, ymax)),
+    drawn per image. ``interpolation``, ``fill`` and ``center`` as in
+    :class:`RandomRotation`."""
+
+    _raw = 6        # angle, tx, ty, scale, shear x, shear y
+
+    def __init__(self, degrees: Any, translate: Any = None, scale: Any = None,
+                 shear: Any = None, interpolation: Any = "nearest", fill: Any = 0,
+                 center: Any = None, same_on_batch: bool = False):
+        self.degrees = _angles(degrees, "RandomAffine: degrees", (2,))
+        self.translate = _pair(translate, "RandomAffine: translate")
+        if self.translate and not all(0.0 <= t <= 1.0 for t in self.translate):
+            raise ValueError(f"RandomAffine: translate values must be in [0, 1], got {translate}")
+        self.scale = _pair(scale, "RandomAffine: scale")
+        if self.scale and not 0 < self.scale[0] <= self.scale[1]:
+            raise ValueError(f"RandomAffine: scale must satisfy 0 < min <= max, got {scale}")
+        self.shear = None if shear is None else _angles(shear, "RandomAffine: shear", (2, 4))
+        self.interpolation = _warp_interpolation(interpolation, "RandomAffine")
+        self.fill = _fill3(fill, "RandomAffine")
+        self.center = _pair(center, "RandomAffine: center")
+        self.same_on_batch = bool(same_on_batch)
+
+    def _draw(self, k: int, rng: str) -> list[str]:
+        lo, hi = self.degrees
+        lines = [f"float ang = urand({rng}, {lit(lo)}, {lit(hi)});",
+                 "float tx = 0.0; float ty = 0.0; float sc = 1.0; float shx = 0.0; float shy = 0.0;"]
+        if self.translate:
+            fx, fy = self.translate
+            lines += [f"float mdx = float({_dlit(fx)} * double(CW)); "
+                      f"float mdy = float({_dlit(fy)} * double(CH));",
+                      # torchvision rounds half to even (Python round)
+                      f"tx = round_even(urand({rng}, -mdx, mdx)); "
+                      f"ty = round_even(urand({rng}, -mdy, mdy));"]
+        if self.scale:
+            lines.append(f"sc = urand({rng}, {lit(self.scale[0])}, {lit(self.scale[1])});")
+        if self.shear:
+            lines.append(f"shx = urand({rng}, {lit(self.shear[0])}, {lit(self.shear[1])});")
+            if len(self.shear) == 4:
+                lines.append(f"shy = urand({rng}, {lit(self.shear[2])}, {lit(self.shear[3])});")
+        return lines + [
+            self._center(),
+            "affine_coeffs(CW, CH, double(ang), double(tx), double(ty), double(sc), "
+            "double(shx), double(shy), cx, cy, m);",
+            f"p[uint2({k + 9}, b)] = ang; p[uint2({k + 10}, b)] = tx; "
+            f"p[uint2({k + 11}, b)] = ty;",
+            f"p[uint2({k + 12}, b)] = sc; p[uint2({k + 13}, b)] = shx; "
+            f"p[uint2({k + 14}, b)] = shy;"]
+
+    def __repr__(self) -> str:
+        return (f"RandomAffine(degrees={self.degrees}, translate={self.translate}, "
+                f"scale={self.scale}, shear={self.shear}, "
+                f"interpolation={self.interpolation!r}, fill={self.fill}, center={self.center})")
+
+
+class RandomPerspective(_Warp):
+    """torchvision RandomPerspective: with probability ``p``, move each corner
+    inwards by up to ``distortion_scale`` of half the width and height (drawn
+    per image) and warp the image to match. ``interpolation`` is
+    ``"bilinear"`` (default) or ``"nearest"``; ``fill`` as in
+    :class:`RandomRotation`."""
+
+    _raw = 8        # the moved corners' x, y
+
+    def __init__(self, distortion_scale: float = 0.5, p: float = 0.5,
+                 interpolation: Any = "bilinear", fill: Any = 0, same_on_batch: bool = False):
+        self.distortion_scale = float(distortion_scale)
+        if not 0.0 <= self.distortion_scale <= 1.0:
+            raise ValueError("RandomPerspective: distortion_scale must be in [0, 1], got "
+                             f"{distortion_scale}")
+        self.p = _probability(p)
+        self.interpolation = _warp_interpolation(interpolation, "RandomPerspective")
+        self.fill = _fill3(fill, "RandomPerspective")
+        self.same_on_batch = bool(same_on_batch)
+
+    def _draw(self, k: int, rng: str) -> list[str]:
+        ds = _dlit(self.distortion_scale)
+        return [
+            f"on = rnd({rng}) < {lit(self.p)};",
+            f"int bw = int({ds} * double(CW / 2)) + 1; int bh = int({ds} * double(CH / 2)) + 1;",
+            "int4 ex; int4 ey;",
+            f"ex.x = irand({rng}, bw); ey.x = irand({rng}, bh);",
+            f"ex.y = CW - bw + irand({rng}, bw); ey.y = irand({rng}, bh);",
+            f"ex.z = CW - bw + irand({rng}, bw); ey.z = CH - bh + irand({rng}, bh);",
+            f"ex.w = irand({rng}, bw); ey.w = CH - bh + irand({rng}, bh);",
+            "perspective_coeffs(CW, CH, ex, ey, m);",
+            "for (int i = 0; i < 4; ++i) {",
+            f"    p[uint2({k + 9} + 2 * i, b)] = float(ex[i]); "
+            f"p[uint2({k + 10} + 2 * i, b)] = float(ey[i]); }}"]
+
+    def __repr__(self) -> str:
+        return (f"RandomPerspective(distortion_scale={self.distortion_scale}, p={self.p}, "
+                f"interpolation={self.interpolation!r}, fill={self.fill})")
+
+
 
 # ------------------------------------------------------------ colour ops
 class ColorJitter(Transform):
@@ -452,7 +678,8 @@ class GaussianBlur(Transform):
 class RandomApply(Transform):
     """torchvision RandomApply: apply ``transforms`` to an image with
     probability ``p``. Holds pointwise ops, or exactly one op that reads
-    neighbouring pixels (a blur)."""
+    neighbouring pixels (a blur) or warps (RandomRotation, RandomAffine,
+    RandomPerspective)."""
 
     def __init__(self, transforms: Sequence[Transform], p: float = 0.5,
                  same_on_batch: bool = False):
@@ -465,13 +692,14 @@ class RandomApply(Transform):
             if not isinstance(t, Transform):
                 raise TypeError(f"RandomApply takes slangvision transforms, got {t!r}")
         kinds = {t._kind for t in self.transforms}
-        if "neighbourhood" in kinds and len(self.transforms) != 1:
+        if kinds - {"pointwise", "neighbourhood", "warp"}:
+            raise ValueError("RandomApply holds colour ops, blurs and warps, not resizes, "
+                             "crops, flips (they have their own p) or Normalize")
+        if kinds - {"pointwise"} and len(self.transforms) != 1:
             raise ValueError("RandomApply holds either pointwise ops or exactly one op that "
-                             "reads neighbouring pixels (such as GaussianBlur)")
-        if kinds - {"pointwise", "neighbourhood"}:
-            raise ValueError("RandomApply holds colour ops and blurs, not geometric "
-                             "transforms, flips (they have their own p) or Normalize")
-        self._kind = "neighbourhood" if "neighbourhood" in kinds else "pointwise"
+                             "reads neighbouring pixels (such as GaussianBlur or "
+                             "RandomRotation)")
+        self._kind = next(iter(kinds - {"pointwise"}), "pointwise")
 
     def _children(self) -> list[Transform]:
         return self.transforms
@@ -500,7 +728,8 @@ class RandomApply(Transform):
 class RandomChoice(Transform):
     """torchvision RandomChoice: apply one of ``transforms`` per image, chosen
     with weights ``p`` (equal by default). Holds colour ops and at most one op
-    that reads neighbouring pixels, e.g. the choice in DeiT III's ThreeAugment:
+    that reads neighbouring pixels (a blur or a warp), e.g. the choice in DeiT
+    III's ThreeAugment:
     ``RandomChoice([RandomGrayscale(p=1), RandomSolarize(0.5, p=1), GaussianBlur(13)])``.
     With ``same_on_batch=True`` every image gets the same choice."""
 
@@ -518,12 +747,13 @@ class RandomChoice(Transform):
             raise ValueError("RandomChoice: p needs one non-negative weight per transform")
         self.p = [w / sum(weights) for w in weights]
         kinds = [t._kind for t in self.transforms]
-        if kinds.count("neighbourhood") > 1:
-            raise ValueError("RandomChoice holds at most one op that reads neighbouring pixels")
-        if set(kinds) - {"pointwise", "neighbourhood"}:
-            raise ValueError("RandomChoice holds colour ops and blurs, not geometric "
-                             "transforms, flips or Normalize")
-        self._kind = "neighbourhood" if "neighbourhood" in kinds else "pointwise"
+        if set(kinds) - {"pointwise", "neighbourhood", "warp"}:
+            raise ValueError("RandomChoice holds colour ops, blurs and warps, not resizes, "
+                             "crops, flips or Normalize")
+        if len(kinds) - kinds.count("pointwise") > 1:
+            raise ValueError("RandomChoice holds at most one op that reads neighbouring pixels "
+                             "(a blur or a warp)")
+        self._kind = next((k for k in kinds if k != "pointwise"), "pointwise")
 
     def _children(self) -> list[Transform]:
         return self.transforms
@@ -544,7 +774,7 @@ class RandomChoice(Transform):
         return self._branches(b, lambda t: t._apply(b))
 
     def _post(self, b: Binding) -> list[str]:
-        # with a blur among the choices: the colour-op choices (and those of a
+        # with a blur or warp among the choices: the colour-op choices (and those of a
         # nested container) run in the pass after it
         return self._branches(b, lambda t: t._apply(b) if t._kind == "pointwise" else t._post(b))
 

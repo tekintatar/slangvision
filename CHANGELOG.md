@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- `RandomRotation`, `RandomAffine` and `RandomPerspective`, with
+  torchvision's parameters, nearest or bilinear sampling and its fill. Each
+  warp runs as its own pass over the image after the resize and crops (about
+  0.2 ms per batch of 256 at 224x224); flips after a warp apply after it.
+  Can be wrapped in `RandomApply` or `RandomChoice`. Not supported:
+  `RandomRotation(expand=True)` and warps before a resize or crop.
 - `MixUp` and `CutMix` (torchvision's, draw for draw: the same seed gives
   torchvision's result) and `MixUpCutMix` (timm's `Mixup`: switch
   probability, label smoothing, batch/pair/elem modes, `cutmix_minmax`),

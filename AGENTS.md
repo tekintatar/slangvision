@@ -38,7 +38,7 @@ notes (interpreter paths, GPU hosts, identities) in your own untracked
   bridge.
 - `src/slangvision/shaders/` — the op library, one file per topic:
   `core.slang` (parameter access, pixel helpers, RNG), `color.slang`,
-  `geometry.slang`, `neighbourhood.slang`, `sources.slang`. `_runtime.py`
+  `geometry.slang`, `neighbourhood.slang`, `sources.slang`, `warp.slang`. `_runtime.py`
   joins them (core first) into one source, so a new file needs no
   registration and the split has no run-time cost.
 

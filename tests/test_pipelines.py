@@ -51,11 +51,11 @@ def batch():
     return torch.stack([_image(96, 128, g) for _ in range(6)])
 
 
-def _check(transforms, images, layout="chw"):
+def _check(transforms, images, layout="chw", tol16=TOL16):
     torch.manual_seed(0)
     assert max_reference_error(A.Compose(transforms, dtype=torch.float32), images, layout) < TOL32
     torch.manual_seed(0)
-    assert max_reference_error(A.Compose(transforms), images, layout) < TOL16
+    assert max_reference_error(A.Compose(transforms), images, layout) < tol16
 
 
 # ---------------------------------------------------------------- recipes
@@ -594,3 +594,91 @@ def test_python_torch_bridge_is_scoped_to_slangvision(images):
     finally:
         spy.set_torch_bridge_python_fallback(was)
         spy.set_allow_torch_fallback(allowed)
+
+
+# ------------------------------------------------------------------ warps
+@pytest.mark.parametrize("transforms", [
+    [A.RandomResizedCrop((96, 128)), A.RandomRotation(30, interpolation="bilinear")],
+    [A.Resize((80, 100)), A.RandomAffine(20, translate=(0.2, 0.1), scale=(0.7, 1.3),
+                                         shear=(-10, 10, -5, 5), interpolation="bilinear",
+                                         fill=(0.2, 0.5, 0.8))],
+    [A.Resize((63, 47)), A.RandomAffine((-180, 180), scale=(0.5, 1.5), shear=15,
+                                        interpolation="bilinear", center=(5.5, 40.0))],
+    [A.RandomResizedCrop(64), A.RandomPerspective(0.6, p=0.7)],
+    [A.RandomResizedCrop((61, 77)), A.RandomPerspective(1.0, p=1.0, fill=0.5)],
+    [A.RandomResizedCrop(64), A.RandomApply([A.RandomAffine(15, interpolation="bilinear")]),
+     A.GaussianBlur(5), A.RandomHorizontalFlip()],
+    [A.RandomResizedCrop(64), A.GaussianBlur(5), A.RandomPerspective(p=1.0),
+     A.RandomChoice([A.RandomRotation(40, interpolation="bilinear"), A.RandomGrayscale(p=1.0)]),
+     A.RandomErasing(p=1.0)],
+])
+def test_warps_match_torchvision(transforms, images):
+    _check(transforms, images)
+
+
+def test_flips_and_jitter_around_a_warp_match_torchvision(images):
+    # float16: the resampled image is stored as float16 between the passes,
+    # and the jitter after the warp scales that rounding by up to 1.4 * 1.4
+    _check([A.RandomResizedCrop(64), A.RandomHorizontalFlip(),
+            A.RandomRotation(25, interpolation="bilinear", center=(10, 40)),
+            A.RandomVerticalFlip(), A.ColorJitter(0.4, 0.4, 0.4, 0.1), A.Normalize(MEAN, STD)],
+           images, tol16=8e-3)
+
+
+def test_flips_between_warps_and_after_your_neighbourhood_op_match_torchvision(images):
+    # a flip after your NeighbourhoodOp is allowed once a warp comes between them
+    _check([A.RandomResizedCrop(64), BoxBlur(), A.RandomRotation(20, interpolation="bilinear"),
+            A.RandomHorizontalFlip(), A.RandomPerspective(p=0.8), A.RandomVerticalFlip(),
+            A.RandomHorizontalFlip()], images)
+
+
+def test_cifar_style_rotation_matches_torchvision(small):
+    _check([A.RandomCrop(32, padding=4, pad_if_needed=True), A.RandomHorizontalFlip(),
+            A.RandomRotation(15, interpolation="bilinear"), A.Normalize(MEAN, STD)], small)
+
+
+@pytest.mark.parametrize("transforms", [
+    [A.Resize((72, 88)), A.RandomRotation(30)],
+    [A.Resize((72, 88)), A.RandomAffine(20, translate=(0.2, 0.2), scale=(0.8, 1.2), shear=10,
+                                        fill=0.3)],
+    [A.RandomResizedCrop(64), A.RandomPerspective(p=1.0, interpolation="nearest")],
+])
+def test_nearest_warps_match_torchvision_but_for_rounding_ties(transforms, images):
+    # torchvision computes the sampling grid in float32 with its own rounding,
+    # so a position within ~1e-5 px of a pixel boundary can pick the other pixel
+    torch.manual_seed(0)
+    pipe = A.Compose(transforms, dtype=torch.float32)
+    out, params = pipe._run(images, "chw")
+    bad = ((out - _replay(pipe, images, params)).abs() > TOL32).float().mean().item()
+    assert bad < 1e-3
+
+
+def test_warp_random_values_follow_torchvision(batch):
+    rot = A.RandomRotation((-10, 30))
+    aff = A.RandomAffine(0, translate=(0.25, 0.1), scale=(0.8, 1.2), shear=(-5, 5, 2, 4))
+    per = A.RandomPerspective(0.4, p=0.3)
+    same = A.RandomRotation(90, same_on_batch=True)
+    pipe = A.Compose([A.Resize((61, 90)), rot, aff, per, same])
+    torch.manual_seed(0)
+    _, params = pipe._run(batch.repeat(200, 1, 1, 1), "chw")
+    k = pipe._b.k
+    angle = params[:, k(rot) + 9]
+    assert angle.min() >= -10 and angle.max() <= 30 and angle.std() > 9
+    tx, ty, sc, shx, shy = params[:, k(aff) + 10:k(aff) + 15].T
+    assert torch.equal(tx, tx.round()) and torch.equal(ty, ty.round())
+    assert tx.abs().max() == 22 and ty.abs().max() == 6
+    # rounded, not truncated: 0 takes 1/45 of (-22.5, 22.5), truncation 2/45
+    assert abs((tx == 0).float().mean().item() - 1 / 45) < 0.012
+    assert sc.min() >= 0.8 and sc.max() <= 1.2
+    assert shx.abs().max() <= 5 and shy.min() >= 2 and shy.max() <= 4
+    applied = params[:, k(per)] > 0.5
+    assert abs(applied.float().mean().item() - 0.3) < 0.05
+    # corners: bound int(0.4 * 90 // 2) + 1 = 19 across, int(0.4 * 61 // 2) + 1 = 13 down
+    ex = params[:, k(per) + 9:k(per) + 17:2]
+    ey = params[:, k(per) + 10:k(per) + 17:2]
+    assert ex[:, [0, 3]].min() == 0 and ex[:, [0, 3]].max() == 18
+    assert ex[:, [1, 2]].min() == 90 - 19 and ex[:, [1, 2]].max() == 89
+    assert ey[:, [0, 1]].min() == 0 and ey[:, [0, 1]].max() == 12
+    assert ey[:, [2, 3]].min() == 61 - 13 and ey[:, [2, 3]].max() == 60
+    shared = params[:, k(same) + 9]
+    assert torch.all(shared == shared[0])

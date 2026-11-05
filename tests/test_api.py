@@ -30,6 +30,10 @@ class Box(A.NeighbourhoodOp):
     ([A.RandomResizedCrop(64), Box(), A.RandomHorizontalFlip()], "before your NeighbourhoodOps"),
     ([A.RandomResizedCrop(8), A.GaussianBlur(23)], "larger than its radius"),
     ([A.Resize((64, 6)), A.RandomApply([A.GaussianBlur((13, 3))])], "larger than its radius"),
+    ([A.RandomRotation(10), A.RandomResizedCrop(224)], "warps work on the image after them"),
+    ([A.Resize((64, 64)), A.RandomAffine(5), A.CenterCrop(32)], "must come first"),
+    ([A.RandomResizedCrop(64), A.RandomRotation(10), Box(), A.RandomHorizontalFlip()],
+     "before your NeighbourhoodOps"),
 ])
 def test_pipeline_structure_errors(transforms, match):
     with pytest.raises(ValueError, match=match):
@@ -63,6 +67,27 @@ def test_valid_pipelines_build_without_a_gpu():
     A.Compose([A.ColorJitter(0.4), A.RandomErasing()])      # without Normalize
 
 
+def test_warps_start_a_pass_and_take_the_flips_after_them():
+    pipe = A.Compose([A.RandomResizedCrop(64), A.RandomHorizontalFlip(), A.RandomRotation(15),
+                      A.GaussianBlur(5), A.RandomVerticalFlip(), A.Normalize(MEAN, STD)])
+    src = pipe.source
+    assert "stage_2" in src and "stage_3" not in src         # resample, warp, blur
+    k_h = pipe._b.k(pipe.transforms[1])
+    k_v = pipe._b.k(pipe.transforms[4])
+    input_0 = src[src.index("float4 input_0"):src.index("float4 input_1")]
+    input_1 = src[src.index("float4 input_1"):src.index("float4 input_2")]
+    assert f"prm(p, b, {k_h})" in input_0 and f"prm(p, b, {k_v})" not in input_0
+    assert f"prm(p, b, {k_v})" in input_1      # after the warp, before the blur: commutes
+    # a flip after your NeighbourhoodOp is fine when a warp follows the op
+    A.Compose([A.RandomResizedCrop(64), Box(), A.RandomRotation(10), A.RandomHorizontalFlip()])
+    A.Compose([A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(),
+               A.RandomApply([A.RandomAffine(10, translate=(0.1, 0.1), scale=(0.9, 1.1),
+                                             shear=(-5, 5, -2, 2), center=(3, 4))], p=0.5),
+               A.RandomChoice([A.RandomPerspective(p=1.0), A.RandomGrayscale(p=1.0)]),
+               A.Normalize(MEAN, STD)])
+    A.Compose([A.RandomRotation((-90, 90), interpolation="bilinear", fill=(0.5, 0.5, 0.5))])
+
+
 @pytest.mark.parametrize("make, match", [
     (lambda: A.RandomSolarize(128), "0-1 scale"),
     (lambda: A.ColorJitter(brightness=-0.1), "non-negative"),
@@ -81,7 +106,7 @@ def test_valid_pipelines_build_without_a_gpu():
     (lambda: A.Normalize(MEAN, (0.2, 0.0, 0.2)), "non-zero"),
     (lambda: A.RandomApply([]), "at least one"),
     (lambda: A.RandomApply([A.GaussianBlur(3), A.ColorJitter(0.1)]), "exactly one"),
-    (lambda: A.RandomApply([A.CenterCrop(8)]), "geometric"),
+    (lambda: A.RandomApply([A.CenterCrop(8)]), "crops"),
     (lambda: A.Compose([A.ColorJitter(0.4)], dtype="float64"), "dtype"),
     (lambda: A.Uniform(1.0, 0.0), "low <= high"),
     (lambda: A.Compose([A.RandomResizedCrop(8)] + [A.RandomHorizontalFlip()] * 2), "appears twice"),
@@ -108,6 +133,22 @@ def test_valid_pipelines_build_without_a_gpu():
     (lambda: A.Resize(8, interpolation="lanczos"), "interpolation"),
     (lambda: A.GaussianBlur((3, 5, 7)), "kernel_size"),
     (lambda: A.RandomApply([A.RandomHorizontalFlip()]), "flips"),
+    (lambda: A.RandomRotation(-5), "non-negative"),
+    (lambda: A.RandomRotation((1, 2, 3)), "sequence of 2"),
+    (lambda: A.RandomRotation(10, expand=True), "expand"),
+    (lambda: A.RandomRotation(10, interpolation="bicubic"), "nearest or bilinear"),
+    (lambda: A.RandomRotation(10, fill=255), "0-1 scale"),
+    (lambda: A.RandomRotation(10, center=(1, 2, 3)), "center"),
+    (lambda: A.RandomAffine(10, translate=(0.1, 1.5)), "translate"),
+    (lambda: A.RandomAffine(10, scale=(0.0, 1.0)), "scale"),
+    (lambda: A.RandomAffine(10, shear=(1, 2, 3)), "shear"),
+    (lambda: A.RandomAffine(float("nan")), "finite"),
+    (lambda: A.RandomPerspective(1.5), "distortion_scale"),
+    (lambda: A.RandomPerspective(p=-0.1), "p must be in"),
+    (lambda: A.RandomApply([A.RandomRotation(5), A.RandomGrayscale()]), "exactly one"),
+    (lambda: A.RandomChoice([A.RandomRotation(5), A.GaussianBlur(3)]), "at most one"),
+    (lambda: A.RandomApply([A.RandomHorizontalFlip(), A.ColorJitter(0.1)]), "flips"),
+    (lambda: A.RandomChoice([A.RandomHorizontalFlip(), A.CenterCrop(8)]), "flips"),
 ])
 def test_argument_errors(make, match):
     with pytest.raises(ValueError, match=match):

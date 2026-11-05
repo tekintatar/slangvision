@@ -8,8 +8,8 @@
 #   pre_<s>            optional pre-pass of a separable neighbourhood op
 #   stage_<s>          pass s: its input (pass 0 resamples the source image;
 #                      later passes read the previous pass through their
-#                      neighbourhood op), then its pointwise chain; the last
-#                      pass normalizes and writes the output
+#                      neighbourhood op or warp), then its pointwise chain;
+#                      the last pass normalizes and writes the output
 # Containers become per-image branches (RandomApply flags, ColorJitter's
 # order).
 
@@ -18,9 +18,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ._base import P, Binding, NeighbourhoodOp, Transform, _UserOp, lit
-from .transforms import (CenterCrop, ColorJitter, GaussianBlur, Normalize, Pad, RandomApply,
-                         RandomChoice, RandomCrop, RandomErasing, RandomHorizontalFlip,
-                         RandomResizedCrop, RandomVerticalFlip, Resize, _Window)
+from .transforms import (CenterCrop, ColorJitter, GaussianBlur, Normalize, Pad, RandomAffine,
+                         RandomApply, RandomChoice, RandomCrop, RandomErasing,
+                         RandomHorizontalFlip, RandomPerspective, RandomResizedCrop,
+                         RandomRotation, RandomVerticalFlip, Resize, _Window)
 
 if TYPE_CHECKING:
     import torch
@@ -82,8 +83,8 @@ def _dtype_name(dtype: Any) -> str:
 
 
 _BUILT_IN = (RandomResizedCrop, Resize, CenterCrop, Pad, RandomCrop, RandomHorizontalFlip,
-             RandomVerticalFlip, ColorJitter, GaussianBlur, RandomApply, RandomChoice, Normalize,
-             RandomErasing)
+             RandomVerticalFlip, RandomRotation, RandomAffine, RandomPerspective, ColorJitter,
+             GaussianBlur, RandomApply, RandomChoice, Normalize, RandomErasing)
 
 
 def _walk(transforms: Sequence[Transform]):
@@ -96,11 +97,11 @@ def _walk(transforms: Sequence[Transform]):
 
 
 def _unwrap(t: Transform) -> tuple[list[tuple[Transform, Transform]], Transform]:
-    """A neighbourhood op and the (RandomApply | RandomChoice, child) wrappers
-    that gate it."""
+    """A neighbourhood op or warp and the (RandomApply | RandomChoice, child)
+    wrappers that gate it."""
     gates: list[tuple[Transform, Transform]] = []
     while isinstance(t, (RandomApply, RandomChoice)):
-        child = next(c for c in t.transforms if c._kind == "neighbourhood")
+        child = next(c for c in t.transforms if c._kind != "pointwise")
         gates.append((t, child))
         t = child
     return gates, t
@@ -119,8 +120,9 @@ class Compose:
     ``Compose(transforms, dtype=torch.float16)``; ``torch.bfloat16`` and
     ``torch.float32`` output are also available. Geometric transforms come
     first: an optional RandomResizedCrop or Resize, then any sequence of Pad,
-    CenterCrop and RandomCrop; they fix the output size. Flips and colour ops
-    follow in any order; Normalize, if present, comes next, and RandomErasing last.
+    CenterCrop and RandomCrop; they fix the output size. Flips, warps
+    (RandomRotation, RandomAffine, RandomPerspective) and colour ops follow in
+    any order; Normalize, if present, comes next, and RandomErasing last.
 
     Calling the pipeline returns a contiguous ``(B, 3, H, W)`` tensor of
     ``dtype`` on the current CUDA stream. ``images`` is a ``(B, 3, H, W)``
@@ -150,6 +152,8 @@ class Compose:
     def _plan(self) -> None:
         geometry: list[Transform] = []
         self._flips: list[Transform] = []
+        self._flip_stage: dict[int, int] = {}   # flip -> the pass whose input applies it
+        warp_stage = 0
         self._stages: list[list[Transform]] = [[]]
         self._neighbourhood: list[Transform] = []
         self._normalize: Normalize | None = None
@@ -164,7 +168,8 @@ class Compose:
                                  "RandomErasing")
             if kind == "geometry":
                 if self._flips or self._neighbourhood or any(self._stages):
-                    raise ValueError(f"{t!r}: geometric transforms must come first")
+                    raise ValueError(f"{t!r}: resizes, crops and pads must come first (warps "
+                                     "work on the image after them)")
                 if getattr(t, "_resamples", False) and geometry:
                     raise ValueError(f"{t!r}: one Resize or RandomResizedCrop per pipeline, "
                                      "and it must be the first transform")
@@ -172,7 +177,10 @@ class Compose:
             elif kind == "flip":
                 if user_neighbourhood:
                     raise ValueError(f"{t!r} must come before your NeighbourhoodOps")
+                # a flip after a warp mirrors the warp's output coordinates;
+                # it commutes with everything else
                 self._flips.append(t)
+                self._flip_stage[id(t)] = warp_stage
             elif kind == "pointwise":
                 self._stages[-1].append(t)
             elif kind == "neighbourhood":
@@ -180,6 +188,11 @@ class Compose:
                 # its _post lines (a container's colour ops) start the next pass's chain
                 self._stages.append([t])
                 user_neighbourhood |= isinstance(_unwrap(t)[1], NeighbourhoodOp)
+            elif kind == "warp":
+                self._neighbourhood.append(t)
+                self._stages.append([t])
+                warp_stage = len(self._stages) - 1
+                user_neighbourhood = False
             elif kind == "normalize":
                 self._normalize = t     # type: ignore[assignment]
             elif kind == "erase":
@@ -207,7 +220,7 @@ class Compose:
             b.win[id(w)] = b.nparams
             b.nparams += _WINDOW_SLOTS
         for t in self.transforms:
-            if t._kind == "neighbourhood":
+            if t._kind in ("neighbourhood", "warp"):
                 b.stage += 1
             b.bind(t)
         self._b = b
@@ -290,12 +303,7 @@ class Compose:
         g = b.geo
         src += ["float4 input_0<S : IImageSource>(S src, Tensor<float, 2> p, int b, int x, int y,",
                 "                                 int OW, int OH)",
-                "{"]
-        for axis, coord, size in ((0, "x", "OW"), (1, "y", "OH")):
-            flips = [f"({P(b.k(f))} > 0.5)" for f in self._flips if f._axis == axis]  # type: ignore[attr-defined]
-            if flips:
-                src.append(f"    if ({' != '.join(flips)}) {coord} = {size} - 1 - {coord};")
-        src.append("    int rx = x; int ry = y;")
+                "{", *self._flip_lines(0), "    int rx = x; int ry = y;"]
         for w in reversed(self._windows):
             k = b.win[id(w)]
             src += [f"    rx += int({P(k)}); ry += int({P(k + 1)});",
@@ -329,7 +337,7 @@ class Compose:
                         "    int x = pix.x; int y = pix.y; int b = pix.z;",
                         f"    store_mid(dst, x, y, b, pre_{s}_pixel(src, p, b, x, y, OW, OH));",
                         "}", ""]
-            src += [f"float4 input_{s}{head}", "{", *gate,
+            src += [f"float4 input_{s}{head}", "{", *self._flip_lines(s), *gate,
                     *[f"    {ln}" for ln in op._input(b)], "}", ""]  # type: ignore[attr-defined]
 
         # pointwise chains; `upto` stops at statistic k for its pre-pass
@@ -337,7 +345,8 @@ class Compose:
             src += [f"float4 chain_{s}(float4 c, Tensor<float, 2> p, Tensor<float, 2> st, int b,"
                     " int upto)", "{"]
             src += [f"    {ln}" for t in stage
-                    for ln in (t._post(b) if t._kind == "neighbourhood" else t._apply(b))]
+                    for ln in (t._post(b) if t._kind in ("neighbourhood", "warp")
+                               else t._apply(b))]
             src += ["    return c;", "}", ""]
 
         # pass kernels and statistic pre-passes
@@ -379,6 +388,16 @@ class Compose:
                         "}", ""]
         self._sources[layout] = "\n".join(src)
         return self._sources[layout]
+
+    def _flip_lines(self, stage: int) -> list[str]:
+        """The flips that pass `stage`'s input applies to its coordinates."""
+        lines = []
+        for axis, coord, size in ((0, "x", "OW"), (1, "y", "OH")):
+            flips = [f"({P(self._b.k(f))} > 0.5)" for f in self._flips
+                     if f._axis == axis and self._flip_stage[id(f)] == stage]  # type: ignore[attr-defined]
+            if flips:
+                lines.append(f"    if ({' != '.join(flips)}) {coord} = {size} - 1 - {coord};")
+        return lines
 
     # ------------------------------------------------------------------ run
     def __call__(self, images: Any, layout: str = "chw") -> "torch.Tensor":
