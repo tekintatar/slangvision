@@ -261,4 +261,3 @@ def random_add_poisson_noise_pt(img: "torch.Tensor", scale_range: Any = (0, 1.0)
                                                                  scale_range[0]) + scale_range[0]
     gray = (torch.rand(b, dtype=img.dtype, device=img.device) < gray_prob).float()
     return add_poisson_noise_pt(img, scale, clip, rounds, gray)
-
