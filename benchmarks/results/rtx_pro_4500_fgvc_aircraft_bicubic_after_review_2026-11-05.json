@@ -1,0 +1,63 @@
+{
+ "meta": {
+  "date": "2026-11-05T19:58:08.287233+00:00",
+  "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+  "torch": "2.13.0+cu130",
+  "slangvision": "0.1.0",
+  "python": "3.12.3",
+  "batch": 256,
+  "interpolation": "bicubic",
+  "input_size": null,
+  "images": "fgvc_train"
+ },
+ "results": [
+  {
+   "recipe": "imagenet",
+   "method": "slangvision",
+   "wall_ms": 4.36,
+   "gpu_ms": 3.98,
+   "kernels": 11,
+   "images_per_s": 58721
+  },
+  {
+   "recipe": "imagenet",
+   "method": "torchvision per image",
+   "wall_ms": 204.15,
+   "gpu_ms": 41.98,
+   "kernels": 22405,
+   "images_per_s": 1254
+  },
+  {
+   "recipe": "eval",
+   "method": "slangvision",
+   "wall_ms": 4.27,
+   "gpu_ms": 3.99,
+   "kernels": 6,
+   "images_per_s": 59885
+  },
+  {
+   "recipe": "eval",
+   "method": "torchvision per image",
+   "wall_ms": 34.62,
+   "gpu_ms": 20.15,
+   "kernels": 2818,
+   "images_per_s": 7395
+  },
+  {
+   "recipe": "simclr",
+   "method": "slangvision",
+   "wall_ms": 5.34,
+   "gpu_ms": 5.17,
+   "kernels": 13,
+   "images_per_s": 47978
+  },
+  {
+   "recipe": "simclr",
+   "method": "torchvision per image",
+   "wall_ms": 208.51,
+   "gpu_ms": 47.75,
+   "kernels": 20661,
+   "images_per_s": 1228
+  }
+ ]
+}

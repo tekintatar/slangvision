@@ -88,6 +88,31 @@ def test_warps_start_a_pass_and_take_the_flips_after_them():
     A.Compose([A.RandomRotation((-90, 90), interpolation="bilinear", fill=(0.5, 0.5, 0.5))])
 
 
+def test_pass_0_statistics_store_the_resample_when_it_is_costly():
+    """Statistic pre-passes in pass 0 would resample again: Compose resamples
+    once into float32 instead for antialiased bicubic, or bilinear from images
+    at least _SPLIT_AREA times the output's area (on average)."""
+    jitter = [A.ColorJitter(0.4, 0.4), A.Normalize(MEAN, STD)]
+    bilinear = A.Compose([A.RandomResizedCrop(224), *jitter])
+    assert not bilinear._split([(384, 512)], 224, 224)
+    assert bilinear._split([(695, 1024)], 224, 224)
+    assert bilinear._split([(384, 512), (1000, 1200)], 224, 224)     # a list: the mean area
+    assert A.Compose([A.Resize(256, interpolation="bicubic"), A.CenterCrop(224),
+                      *jitter])._split([(256, 341)], 224, 224)
+    for no_split in ([A.RandomResizedCrop(224, antialias=False), *jitter],
+                     [A.RandomCrop(224), *jitter],
+                     [A.RandomResizedCrop(224), A.ColorJitter(0.4)],         # no statistic
+                     [A.RandomResizedCrop(224), A.RandAugment()],           # in later passes
+                     [A.RandomResizedCrop(224), A.RandomEqualize(p=0.5)]):  # half the images
+        assert not A.Compose(no_split)._split([(2000, 3000)], 224, 224)
+    for split in ([A.RandomResizedCrop(224), A.RandomEqualize(p=1.0)],
+                  [A.RandomResizedCrop(224), A.RandomAutocontrast(), A.RandomEqualize()],
+                  [A.RandomResizedCrop(224), A.RandomApply([A.ColorJitter(contrast=0.4)], p=0.5),
+                   A.RandomAutocontrast()],
+                  [A.RandomResizedCrop(224, interpolation="bicubic"), A.RandomEqualize(p=0.5)]):
+        assert A.Compose(split)._split([(2000, 3000)], 224, 224)
+
+
 def test_rand_augment_builds_one_pass_per_op():
     ra = A.RandAugment(num_ops=3)
     pipe = A.Compose([A.RandomResizedCrop(224), A.RandomHorizontalFlip(), ra,

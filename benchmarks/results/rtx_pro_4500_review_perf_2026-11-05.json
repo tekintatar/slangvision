@@ -1,0 +1,1479 @@
+{
+ "meta": {
+  "date": "2026-11-05",
+  "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+  "torch": "2.13.0+cu130",
+  "slangpy": "0.42.0",
+  "batch": 256,
+  "dtype": "float16",
+  "before": "34519ed (main before the review fixes)",
+  "after": "the review fixes: stored resample for pass-0 statistics, GaussianBlur weights in the sampler, statistic pre-passes skipping images early, contiguous min/max partials",
+  "how": "benchmarks/compare_pipelines.py, before and after interleaved, each run twice; inputs are its generated photo-like images (384x512 default, or --input-size 695x1024)"
+ },
+ "runs": [
+  {
+   "code": "before",
+   "repeat": 1,
+   "args": "--recipes imagenet,simclr,randaug,trivialaug,autoaug,timmaug",
+   "meta": {
+    "date": "2026-11-05T19:34:08.871239+00:00",
+    "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+    "torch": "2.13.0+cu130",
+    "slangvision": "0.1.0",
+    "python": "3.12.3",
+    "batch": 256,
+    "interpolation": "bilinear",
+    "input_size": "384x512",
+    "images": null
+   },
+   "results": [
+    {
+     "recipe": "imagenet",
+     "method": "slangvision",
+     "wall_ms": 1.68,
+     "gpu_ms": 1.47,
+     "kernels": 13,
+     "images_per_s": 152127
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 20.2,
+     "gpu_ms": 20.27,
+     "kernels": 86,
+     "images_per_s": 12673
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision per image",
+     "wall_ms": 199.27,
+     "gpu_ms": 35.75,
+     "kernels": 22149,
+     "images_per_s": 1285
+    },
+    {
+     "recipe": "imagenet",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 19.19,
+     "gpu_ms": 14.03,
+     "kernels": 840,
+     "images_per_s": 13343
+    },
+    {
+     "recipe": "simclr",
+     "method": "slangvision",
+     "wall_ms": 3.05,
+     "gpu_ms": 2.8,
+     "kernels": 15,
+     "images_per_s": 83834
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 20.67,
+     "gpu_ms": 19.83,
+     "kernels": 65,
+     "images_per_s": 12388
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision per image",
+     "wall_ms": 202.37,
+     "gpu_ms": 40.15,
+     "kernels": 19983,
+     "images_per_s": 1265
+    },
+    {
+     "recipe": "simclr",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 29.65,
+     "gpu_ms": 23.83,
+     "kernels": 980,
+     "images_per_s": 8634
+    },
+    {
+     "recipe": "randaug",
+     "method": "slangvision",
+     "wall_ms": 2.9,
+     "gpu_ms": 2.58,
+     "kernels": 87,
+     "images_per_s": 88350
+    },
+    {
+     "recipe": "randaug",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 6.14,
+     "gpu_ms": 6.32,
+     "kernels": 28,
+     "images_per_s": 41690
+    },
+    {
+     "recipe": "randaug",
+     "method": "torchvision per image",
+     "wall_ms": 109.67,
+     "gpu_ms": 14.5,
+     "kernels": 7363,
+     "images_per_s": 2334
+    },
+    {
+     "recipe": "trivialaug",
+     "method": "slangvision",
+     "wall_ms": 1.89,
+     "gpu_ms": 1.6,
+     "kernels": 48,
+     "images_per_s": 135652
+    },
+    {
+     "recipe": "trivialaug",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 5.28,
+     "gpu_ms": 4.91,
+     "kernels": 23,
+     "images_per_s": 48499
+    },
+    {
+     "recipe": "trivialaug",
+     "method": "torchvision per image",
+     "wall_ms": 93.5,
+     "gpu_ms": 10.04,
+     "kernels": 4876,
+     "images_per_s": 2738
+    },
+    {
+     "recipe": "autoaug",
+     "method": "slangvision",
+     "wall_ms": 3.06,
+     "gpu_ms": 2.73,
+     "kernels": 87,
+     "images_per_s": 83574
+    },
+    {
+     "recipe": "autoaug",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 5.69,
+     "gpu_ms": 4.77,
+     "kernels": 19,
+     "images_per_s": 44989
+    },
+    {
+     "recipe": "autoaug",
+     "method": "torchvision per image",
+     "wall_ms": 91.41,
+     "gpu_ms": 13.16,
+     "kernels": 6293,
+     "images_per_s": 2800
+    },
+    {
+     "recipe": "timmaug",
+     "method": "slangvision",
+     "wall_ms": 2.85,
+     "gpu_ms": 2.5,
+     "kernels": 97,
+     "images_per_s": 89928
+    },
+    {
+     "recipe": "timmaug",
+     "method": "timm per image (Pillow, 1 CPU core)",
+     "wall_ms": 298.39,
+     "gpu_ms": 0.0,
+     "kernels": 0,
+     "images_per_s": 858
+    }
+   ]
+  },
+  {
+   "code": "before",
+   "repeat": 2,
+   "args": "--recipes imagenet,simclr,randaug,trivialaug,autoaug,timmaug",
+   "meta": {
+    "date": "2026-11-05T19:36:09.400112+00:00",
+    "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+    "torch": "2.13.0+cu130",
+    "slangvision": "0.1.0",
+    "python": "3.12.3",
+    "batch": 256,
+    "interpolation": "bilinear",
+    "input_size": "384x512",
+    "images": null
+   },
+   "results": [
+    {
+     "recipe": "imagenet",
+     "method": "slangvision",
+     "wall_ms": 1.68,
+     "gpu_ms": 1.5,
+     "kernels": 13,
+     "images_per_s": 152316
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 20.41,
+     "gpu_ms": 20.04,
+     "kernels": 86,
+     "images_per_s": 12543
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision per image",
+     "wall_ms": 202.21,
+     "gpu_ms": 35.78,
+     "kernels": 22155,
+     "images_per_s": 1266
+    },
+    {
+     "recipe": "imagenet",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 19.28,
+     "gpu_ms": 14.04,
+     "kernels": 840,
+     "images_per_s": 13281
+    },
+    {
+     "recipe": "simclr",
+     "method": "slangvision",
+     "wall_ms": 3.05,
+     "gpu_ms": 2.76,
+     "kernels": 15,
+     "images_per_s": 83833
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 28.16,
+     "gpu_ms": 23.61,
+     "kernels": 79,
+     "images_per_s": 9091
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision per image",
+     "wall_ms": 206.38,
+     "gpu_ms": 40.89,
+     "kernels": 20464,
+     "images_per_s": 1240
+    },
+    {
+     "recipe": "simclr",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 29.66,
+     "gpu_ms": 23.85,
+     "kernels": 980,
+     "images_per_s": 8632
+    },
+    {
+     "recipe": "randaug",
+     "method": "slangvision",
+     "wall_ms": 2.9,
+     "gpu_ms": 2.57,
+     "kernels": 87,
+     "images_per_s": 88155
+    },
+    {
+     "recipe": "randaug",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 6.62,
+     "gpu_ms": 5.62,
+     "kernels": 22,
+     "images_per_s": 38642
+    },
+    {
+     "recipe": "randaug",
+     "method": "torchvision per image",
+     "wall_ms": 109.06,
+     "gpu_ms": 14.91,
+     "kernels": 7575,
+     "images_per_s": 2347
+    },
+    {
+     "recipe": "trivialaug",
+     "method": "slangvision",
+     "wall_ms": 1.89,
+     "gpu_ms": 1.6,
+     "kernels": 48,
+     "images_per_s": 135603
+    },
+    {
+     "recipe": "trivialaug",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 5.33,
+     "gpu_ms": 5.26,
+     "kernels": 23,
+     "images_per_s": 47994
+    },
+    {
+     "recipe": "trivialaug",
+     "method": "torchvision per image",
+     "wall_ms": 80.93,
+     "gpu_ms": 10.73,
+     "kernels": 5168,
+     "images_per_s": 3163
+    },
+    {
+     "recipe": "autoaug",
+     "method": "slangvision",
+     "wall_ms": 3.07,
+     "gpu_ms": 2.74,
+     "kernels": 87,
+     "images_per_s": 83485
+    },
+    {
+     "recipe": "autoaug",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 5.78,
+     "gpu_ms": 4.78,
+     "kernels": 28,
+     "images_per_s": 44299
+    },
+    {
+     "recipe": "autoaug",
+     "method": "torchvision per image",
+     "wall_ms": 93.83,
+     "gpu_ms": 13.54,
+     "kernels": 6488,
+     "images_per_s": 2728
+    },
+    {
+     "recipe": "timmaug",
+     "method": "slangvision",
+     "wall_ms": 2.85,
+     "gpu_ms": 2.52,
+     "kernels": 97,
+     "images_per_s": 89971
+    },
+    {
+     "recipe": "timmaug",
+     "method": "timm per image (Pillow, 1 CPU core)",
+     "wall_ms": 340.33,
+     "gpu_ms": 0.0,
+     "kernels": 0,
+     "images_per_s": 752
+    }
+   ]
+  },
+  {
+   "code": "before",
+   "repeat": 1,
+   "args": "--input-size 695x1024 --interpolation bicubic --recipes imagenet,eval,simclr",
+   "meta": {
+    "date": "2026-11-05T19:34:23.474966+00:00",
+    "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+    "torch": "2.13.0+cu130",
+    "slangvision": "0.1.0",
+    "python": "3.12.3",
+    "batch": 256,
+    "interpolation": "bicubic",
+    "input_size": "695x1024",
+    "images": null
+   },
+   "results": [
+    {
+     "recipe": "imagenet",
+     "method": "slangvision",
+     "wall_ms": 8.51,
+     "gpu_ms": 8.09,
+     "kernels": 13,
+     "images_per_s": 30070
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 25.6,
+     "gpu_ms": 25.12,
+     "kernels": 88,
+     "images_per_s": 10002
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision per image",
+     "wall_ms": 202.41,
+     "gpu_ms": 41.69,
+     "kernels": 22395,
+     "images_per_s": 1265
+    },
+    {
+     "recipe": "eval",
+     "method": "slangvision",
+     "wall_ms": 3.7,
+     "gpu_ms": 3.6,
+     "kernels": 9,
+     "images_per_s": 69120
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 18.26,
+     "gpu_ms": 18.35,
+     "kernels": 12,
+     "images_per_s": 14020
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision per image",
+     "wall_ms": 31.81,
+     "gpu_ms": 18.66,
+     "kernels": 2818,
+     "images_per_s": 8047
+    },
+    {
+     "recipe": "simclr",
+     "method": "slangvision",
+     "wall_ms": 9.28,
+     "gpu_ms": 9.17,
+     "kernels": 15,
+     "images_per_s": 27601
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 27.32,
+     "gpu_ms": 31.2,
+     "kernels": 84,
+     "images_per_s": 9372
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision per image",
+     "wall_ms": 206.64,
+     "gpu_ms": 46.59,
+     "kernels": 20351,
+     "images_per_s": 1239
+    }
+   ]
+  },
+  {
+   "code": "before",
+   "repeat": 2,
+   "args": "--input-size 695x1024 --interpolation bicubic --recipes imagenet,eval,simclr",
+   "meta": {
+    "date": "2026-11-05T19:36:26.379265+00:00",
+    "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+    "torch": "2.13.0+cu130",
+    "slangvision": "0.1.0",
+    "python": "3.12.3",
+    "batch": 256,
+    "interpolation": "bicubic",
+    "input_size": "695x1024",
+    "images": null
+   },
+   "results": [
+    {
+     "recipe": "imagenet",
+     "method": "slangvision",
+     "wall_ms": 8.51,
+     "gpu_ms": 8.3,
+     "kernels": 13,
+     "images_per_s": 30084
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 25.07,
+     "gpu_ms": 25.66,
+     "kernels": 88,
+     "images_per_s": 10213
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision per image",
+     "wall_ms": 220.86,
+     "gpu_ms": 41.53,
+     "kernels": 22396,
+     "images_per_s": 1159
+    },
+    {
+     "recipe": "eval",
+     "method": "slangvision",
+     "wall_ms": 3.73,
+     "gpu_ms": 3.62,
+     "kernels": 9,
+     "images_per_s": 68557
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 18.36,
+     "gpu_ms": 18.41,
+     "kernels": 12,
+     "images_per_s": 13943
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision per image",
+     "wall_ms": 35.85,
+     "gpu_ms": 18.68,
+     "kernels": 2818,
+     "images_per_s": 7140
+    },
+    {
+     "recipe": "simclr",
+     "method": "slangvision",
+     "wall_ms": 9.07,
+     "gpu_ms": 9.19,
+     "kernels": 15,
+     "images_per_s": 28237
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 28.03,
+     "gpu_ms": 30.13,
+     "kernels": 80,
+     "images_per_s": 9134
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision per image",
+     "wall_ms": 233.43,
+     "gpu_ms": 48.48,
+     "kernels": 21119,
+     "images_per_s": 1097
+    }
+   ]
+  },
+  {
+   "code": "before",
+   "repeat": 1,
+   "args": "--input-size 695x1024 --recipes imagenet,eval,simclr",
+   "meta": {
+    "date": "2026-11-05T19:34:39.710248+00:00",
+    "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+    "torch": "2.13.0+cu130",
+    "slangvision": "0.1.0",
+    "python": "3.12.3",
+    "batch": 256,
+    "interpolation": "bilinear",
+    "input_size": "695x1024",
+    "images": null
+   },
+   "results": [
+    {
+     "recipe": "imagenet",
+     "method": "slangvision",
+     "wall_ms": 2.89,
+     "gpu_ms": 2.65,
+     "kernels": 13,
+     "images_per_s": 88666
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 22.33,
+     "gpu_ms": 22.53,
+     "kernels": 86,
+     "images_per_s": 11465
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision per image",
+     "wall_ms": 203.35,
+     "gpu_ms": 37.78,
+     "kernels": 22149,
+     "images_per_s": 1259
+    },
+    {
+     "recipe": "imagenet",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 23.42,
+     "gpu_ms": 18.57,
+     "kernels": 840,
+     "images_per_s": 10931
+    },
+    {
+     "recipe": "eval",
+     "method": "slangvision",
+     "wall_ms": 1.45,
+     "gpu_ms": 1.25,
+     "kernels": 9,
+     "images_per_s": 176228
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 11.27,
+     "gpu_ms": 11.45,
+     "kernels": 11,
+     "images_per_s": 22714
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision per image",
+     "wall_ms": 25.81,
+     "gpu_ms": 11.63,
+     "kernels": 2562,
+     "images_per_s": 9918
+    },
+    {
+     "recipe": "simclr",
+     "method": "slangvision",
+     "wall_ms": 4.08,
+     "gpu_ms": 4.06,
+     "kernels": 15,
+     "images_per_s": 62754
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 25.03,
+     "gpu_ms": 32.03,
+     "kernels": 98,
+     "images_per_s": 10227
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision per image",
+     "wall_ms": 210.17,
+     "gpu_ms": 44.45,
+     "kernels": 21072,
+     "images_per_s": 1218
+    },
+    {
+     "recipe": "simclr",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 33.88,
+     "gpu_ms": 28.37,
+     "kernels": 980,
+     "images_per_s": 7556
+    }
+   ]
+  },
+  {
+   "code": "before",
+   "repeat": 2,
+   "args": "--input-size 695x1024 --recipes imagenet,eval,simclr",
+   "meta": {
+    "date": "2026-11-05T19:36:42.856310+00:00",
+    "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+    "torch": "2.13.0+cu130",
+    "slangvision": "0.1.0",
+    "python": "3.12.3",
+    "batch": 256,
+    "interpolation": "bilinear",
+    "input_size": "695x1024",
+    "images": null
+   },
+   "results": [
+    {
+     "recipe": "imagenet",
+     "method": "slangvision",
+     "wall_ms": 2.88,
+     "gpu_ms": 2.65,
+     "kernels": 13,
+     "images_per_s": 89037
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 22.0,
+     "gpu_ms": 23.59,
+     "kernels": 86,
+     "images_per_s": 11638
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision per image",
+     "wall_ms": 202.39,
+     "gpu_ms": 37.66,
+     "kernels": 22139,
+     "images_per_s": 1265
+    },
+    {
+     "recipe": "imagenet",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 23.5,
+     "gpu_ms": 18.56,
+     "kernels": 840,
+     "images_per_s": 10895
+    },
+    {
+     "recipe": "eval",
+     "method": "slangvision",
+     "wall_ms": 1.46,
+     "gpu_ms": 1.25,
+     "kernels": 9,
+     "images_per_s": 175375
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 11.29,
+     "gpu_ms": 11.47,
+     "kernels": 11,
+     "images_per_s": 22670
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision per image",
+     "wall_ms": 25.73,
+     "gpu_ms": 11.63,
+     "kernels": 2562,
+     "images_per_s": 9950
+    },
+    {
+     "recipe": "simclr",
+     "method": "slangvision",
+     "wall_ms": 4.12,
+     "gpu_ms": 4.05,
+     "kernels": 15,
+     "images_per_s": 62113
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 23.47,
+     "gpu_ms": 28.8,
+     "kernels": 82,
+     "images_per_s": 10907
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision per image",
+     "wall_ms": 209.17,
+     "gpu_ms": 44.17,
+     "kernels": 21047,
+     "images_per_s": 1224
+    },
+    {
+     "recipe": "simclr",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 33.89,
+     "gpu_ms": 28.39,
+     "kernels": 980,
+     "images_per_s": 7553
+    }
+   ]
+  },
+  {
+   "code": "after",
+   "repeat": 1,
+   "args": "--recipes imagenet,simclr,randaug,trivialaug,autoaug,timmaug",
+   "meta": {
+    "date": "2026-11-05T19:35:10.747124+00:00",
+    "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+    "torch": "2.13.0+cu130",
+    "slangvision": "0.1.0",
+    "python": "3.12.3",
+    "batch": 256,
+    "interpolation": "bilinear",
+    "input_size": "384x512",
+    "images": null
+   },
+   "results": [
+    {
+     "recipe": "imagenet",
+     "method": "slangvision",
+     "wall_ms": 1.68,
+     "gpu_ms": 1.48,
+     "kernels": 13,
+     "images_per_s": 151970
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 20.34,
+     "gpu_ms": 19.97,
+     "kernels": 86,
+     "images_per_s": 12585
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision per image",
+     "wall_ms": 202.29,
+     "gpu_ms": 35.71,
+     "kernels": 22155,
+     "images_per_s": 1266
+    },
+    {
+     "recipe": "imagenet",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 19.18,
+     "gpu_ms": 14.01,
+     "kernels": 840,
+     "images_per_s": 13345
+    },
+    {
+     "recipe": "simclr",
+     "method": "slangvision",
+     "wall_ms": 2.54,
+     "gpu_ms": 2.35,
+     "kernels": 15,
+     "images_per_s": 100699
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 28.49,
+     "gpu_ms": 27.02,
+     "kernels": 95,
+     "images_per_s": 8987
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision per image",
+     "wall_ms": 209.43,
+     "gpu_ms": 42.01,
+     "kernels": 20758,
+     "images_per_s": 1222
+    },
+    {
+     "recipe": "simclr",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 29.58,
+     "gpu_ms": 23.84,
+     "kernels": 980,
+     "images_per_s": 8655
+    },
+    {
+     "recipe": "randaug",
+     "method": "slangvision",
+     "wall_ms": 2.27,
+     "gpu_ms": 1.96,
+     "kernels": 83,
+     "images_per_s": 112936
+    },
+    {
+     "recipe": "randaug",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 6.78,
+     "gpu_ms": 6.22,
+     "kernels": 30,
+     "images_per_s": 37737
+    },
+    {
+     "recipe": "randaug",
+     "method": "torchvision per image",
+     "wall_ms": 105.08,
+     "gpu_ms": 14.61,
+     "kernels": 7433,
+     "images_per_s": 2436
+    },
+    {
+     "recipe": "trivialaug",
+     "method": "slangvision",
+     "wall_ms": 1.58,
+     "gpu_ms": 1.29,
+     "kernels": 46,
+     "images_per_s": 162404
+    },
+    {
+     "recipe": "trivialaug",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 5.29,
+     "gpu_ms": 5.49,
+     "kernels": 21,
+     "images_per_s": 48408
+    },
+    {
+     "recipe": "trivialaug",
+     "method": "torchvision per image",
+     "wall_ms": 76.47,
+     "gpu_ms": 10.45,
+     "kernels": 5046,
+     "images_per_s": 3348
+    },
+    {
+     "recipe": "autoaug",
+     "method": "slangvision",
+     "wall_ms": 2.49,
+     "gpu_ms": 2.19,
+     "kernels": 83,
+     "images_per_s": 102939
+    },
+    {
+     "recipe": "autoaug",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 5.14,
+     "gpu_ms": 4.7,
+     "kernels": 25,
+     "images_per_s": 49787
+    },
+    {
+     "recipe": "autoaug",
+     "method": "torchvision per image",
+     "wall_ms": 94.39,
+     "gpu_ms": 13.45,
+     "kernels": 6430,
+     "images_per_s": 2712
+    },
+    {
+     "recipe": "timmaug",
+     "method": "slangvision",
+     "wall_ms": 2.22,
+     "gpu_ms": 1.88,
+     "kernels": 93,
+     "images_per_s": 115244
+    },
+    {
+     "recipe": "timmaug",
+     "method": "timm per image (Pillow, 1 CPU core)",
+     "wall_ms": 307.3,
+     "gpu_ms": 0.0,
+     "kernels": 0,
+     "images_per_s": 833
+    }
+   ]
+  },
+  {
+   "code": "after",
+   "repeat": 2,
+   "args": "--recipes imagenet,simclr,randaug,trivialaug,autoaug,timmaug",
+   "meta": {
+    "date": "2026-11-05T19:37:08.989554+00:00",
+    "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+    "torch": "2.13.0+cu130",
+    "slangvision": "0.1.0",
+    "python": "3.12.3",
+    "batch": 256,
+    "interpolation": "bilinear",
+    "input_size": "384x512",
+    "images": null
+   },
+   "results": [
+    {
+     "recipe": "imagenet",
+     "method": "slangvision",
+     "wall_ms": 1.7,
+     "gpu_ms": 1.48,
+     "kernels": 13,
+     "images_per_s": 150758
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 20.43,
+     "gpu_ms": 20.23,
+     "kernels": 87,
+     "images_per_s": 12528
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision per image",
+     "wall_ms": 202.57,
+     "gpu_ms": 35.75,
+     "kernels": 22154,
+     "images_per_s": 1264
+    },
+    {
+     "recipe": "imagenet",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 19.24,
+     "gpu_ms": 14.04,
+     "kernels": 840,
+     "images_per_s": 13309
+    },
+    {
+     "recipe": "simclr",
+     "method": "slangvision",
+     "wall_ms": 2.6,
+     "gpu_ms": 2.34,
+     "kernels": 15,
+     "images_per_s": 98407
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 35.6,
+     "gpu_ms": 29.76,
+     "kernels": 97,
+     "images_per_s": 7190
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision per image",
+     "wall_ms": 206.7,
+     "gpu_ms": 41.22,
+     "kernels": 20894,
+     "images_per_s": 1239
+    },
+    {
+     "recipe": "simclr",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 29.64,
+     "gpu_ms": 23.82,
+     "kernels": 980,
+     "images_per_s": 8636
+    },
+    {
+     "recipe": "randaug",
+     "method": "slangvision",
+     "wall_ms": 2.31,
+     "gpu_ms": 1.95,
+     "kernels": 83,
+     "images_per_s": 111002
+    },
+    {
+     "recipe": "randaug",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 6.42,
+     "gpu_ms": 6.05,
+     "kernels": 30,
+     "images_per_s": 39902
+    },
+    {
+     "recipe": "randaug",
+     "method": "torchvision per image",
+     "wall_ms": 108.93,
+     "gpu_ms": 14.74,
+     "kernels": 7461,
+     "images_per_s": 2350
+    },
+    {
+     "recipe": "trivialaug",
+     "method": "slangvision",
+     "wall_ms": 1.58,
+     "gpu_ms": 1.3,
+     "kernels": 46,
+     "images_per_s": 162383
+    },
+    {
+     "recipe": "trivialaug",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 5.04,
+     "gpu_ms": 4.66,
+     "kernels": 18,
+     "images_per_s": 50755
+    },
+    {
+     "recipe": "trivialaug",
+     "method": "torchvision per image",
+     "wall_ms": 77.91,
+     "gpu_ms": 10.55,
+     "kernels": 5066,
+     "images_per_s": 3286
+    },
+    {
+     "recipe": "autoaug",
+     "method": "slangvision",
+     "wall_ms": 2.48,
+     "gpu_ms": 2.15,
+     "kernels": 83,
+     "images_per_s": 103351
+    },
+    {
+     "recipe": "autoaug",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 5.09,
+     "gpu_ms": 5.46,
+     "kernels": 25,
+     "images_per_s": 50339
+    },
+    {
+     "recipe": "autoaug",
+     "method": "torchvision per image",
+     "wall_ms": 92.78,
+     "gpu_ms": 13.47,
+     "kernels": 6452,
+     "images_per_s": 2759
+    },
+    {
+     "recipe": "timmaug",
+     "method": "slangvision",
+     "wall_ms": 2.21,
+     "gpu_ms": 1.86,
+     "kernels": 93,
+     "images_per_s": 115808
+    },
+    {
+     "recipe": "timmaug",
+     "method": "timm per image (Pillow, 1 CPU core)",
+     "wall_ms": 316.12,
+     "gpu_ms": 0.0,
+     "kernels": 0,
+     "images_per_s": 810
+    }
+   ]
+  },
+  {
+   "code": "after",
+   "repeat": 1,
+   "args": "--input-size 695x1024 --interpolation bicubic --recipes imagenet,eval,simclr",
+   "meta": {
+    "date": "2026-11-05T19:35:25.347129+00:00",
+    "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+    "torch": "2.13.0+cu130",
+    "slangvision": "0.1.0",
+    "python": "3.12.3",
+    "batch": 256,
+    "interpolation": "bicubic",
+    "input_size": "695x1024",
+    "images": null
+   },
+   "results": [
+    {
+     "recipe": "imagenet",
+     "method": "slangvision",
+     "wall_ms": 3.96,
+     "gpu_ms": 3.93,
+     "kernels": 14,
+     "images_per_s": 64588
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 25.46,
+     "gpu_ms": 24.15,
+     "kernels": 88,
+     "images_per_s": 10053
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision per image",
+     "wall_ms": 203.14,
+     "gpu_ms": 41.44,
+     "kernels": 22421,
+     "images_per_s": 1260
+    },
+    {
+     "recipe": "eval",
+     "method": "slangvision",
+     "wall_ms": 3.72,
+     "gpu_ms": 3.61,
+     "kernels": 9,
+     "images_per_s": 68801
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 18.36,
+     "gpu_ms": 18.44,
+     "kernels": 12,
+     "images_per_s": 13945
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision per image",
+     "wall_ms": 31.07,
+     "gpu_ms": 18.67,
+     "kernels": 2818,
+     "images_per_s": 8241
+    },
+    {
+     "recipe": "simclr",
+     "method": "slangvision",
+     "wall_ms": 4.94,
+     "gpu_ms": 5.04,
+     "kernels": 16,
+     "images_per_s": 51843
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 33.01,
+     "gpu_ms": 26.68,
+     "kernels": 79,
+     "images_per_s": 7755
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision per image",
+     "wall_ms": 210.69,
+     "gpu_ms": 46.02,
+     "kernels": 20363,
+     "images_per_s": 1215
+    }
+   ]
+  },
+  {
+   "code": "after",
+   "repeat": 2,
+   "args": "--input-size 695x1024 --interpolation bicubic --recipes imagenet,eval,simclr",
+   "meta": {
+    "date": "2026-11-05T19:37:23.259830+00:00",
+    "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+    "torch": "2.13.0+cu130",
+    "slangvision": "0.1.0",
+    "python": "3.12.3",
+    "batch": 256,
+    "interpolation": "bicubic",
+    "input_size": "695x1024",
+    "images": null
+   },
+   "results": [
+    {
+     "recipe": "imagenet",
+     "method": "slangvision",
+     "wall_ms": 3.98,
+     "gpu_ms": 3.92,
+     "kernels": 14,
+     "images_per_s": 64299
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 25.29,
+     "gpu_ms": 25.14,
+     "kernels": 87,
+     "images_per_s": 10122
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision per image",
+     "wall_ms": 204.08,
+     "gpu_ms": 41.6,
+     "kernels": 22414,
+     "images_per_s": 1254
+    },
+    {
+     "recipe": "eval",
+     "method": "slangvision",
+     "wall_ms": 3.72,
+     "gpu_ms": 3.6,
+     "kernels": 9,
+     "images_per_s": 68832
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 18.38,
+     "gpu_ms": 18.46,
+     "kernels": 12,
+     "images_per_s": 13929
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision per image",
+     "wall_ms": 31.21,
+     "gpu_ms": 18.67,
+     "kernels": 2818,
+     "images_per_s": 8202
+    },
+    {
+     "recipe": "simclr",
+     "method": "slangvision",
+     "wall_ms": 4.97,
+     "gpu_ms": 5.14,
+     "kernels": 16,
+     "images_per_s": 51516
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 26.68,
+     "gpu_ms": 26.88,
+     "kernels": 65,
+     "images_per_s": 9597
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision per image",
+     "wall_ms": 209.34,
+     "gpu_ms": 47.1,
+     "kernels": 21299,
+     "images_per_s": 1223
+    }
+   ]
+  },
+  {
+   "code": "after",
+   "repeat": 1,
+   "args": "--input-size 695x1024 --recipes imagenet,eval,simclr",
+   "meta": {
+    "date": "2026-11-05T19:35:42.299743+00:00",
+    "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+    "torch": "2.13.0+cu130",
+    "slangvision": "0.1.0",
+    "python": "3.12.3",
+    "batch": 256,
+    "interpolation": "bilinear",
+    "input_size": "695x1024",
+    "images": null
+   },
+   "results": [
+    {
+     "recipe": "imagenet",
+     "method": "slangvision",
+     "wall_ms": 2.07,
+     "gpu_ms": 1.88,
+     "kernels": 14,
+     "images_per_s": 123670
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 22.29,
+     "gpu_ms": 22.79,
+     "kernels": 87,
+     "images_per_s": 11484
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision per image",
+     "wall_ms": 201.41,
+     "gpu_ms": 37.83,
+     "kernels": 22145,
+     "images_per_s": 1271
+    },
+    {
+     "recipe": "imagenet",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 23.46,
+     "gpu_ms": 18.56,
+     "kernels": 840,
+     "images_per_s": 10913
+    },
+    {
+     "recipe": "eval",
+     "method": "slangvision",
+     "wall_ms": 1.45,
+     "gpu_ms": 1.25,
+     "kernels": 9,
+     "images_per_s": 176051
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 11.29,
+     "gpu_ms": 11.48,
+     "kernels": 11,
+     "images_per_s": 22668
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision per image",
+     "wall_ms": 25.53,
+     "gpu_ms": 11.61,
+     "kernels": 2562,
+     "images_per_s": 10029
+    },
+    {
+     "recipe": "simclr",
+     "method": "slangvision",
+     "wall_ms": 3.03,
+     "gpu_ms": 2.83,
+     "kernels": 16,
+     "images_per_s": 84486
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 30.97,
+     "gpu_ms": 32.92,
+     "kernels": 86,
+     "images_per_s": 8267
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision per image",
+     "wall_ms": 203.74,
+     "gpu_ms": 44.31,
+     "kernels": 21023,
+     "images_per_s": 1257
+    },
+    {
+     "recipe": "simclr",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 34.5,
+     "gpu_ms": 28.39,
+     "kernels": 980,
+     "images_per_s": 7420
+    }
+   ]
+  },
+  {
+   "code": "after",
+   "repeat": 2,
+   "args": "--input-size 695x1024 --recipes imagenet,eval,simclr",
+   "meta": {
+    "date": "2026-11-05T19:37:40.874202+00:00",
+    "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+    "torch": "2.13.0+cu130",
+    "slangvision": "0.1.0",
+    "python": "3.12.3",
+    "batch": 256,
+    "interpolation": "bilinear",
+    "input_size": "695x1024",
+    "images": null
+   },
+   "results": [
+    {
+     "recipe": "imagenet",
+     "method": "slangvision",
+     "wall_ms": 2.07,
+     "gpu_ms": 1.88,
+     "kernels": 14,
+     "images_per_s": 123673
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 22.67,
+     "gpu_ms": 21.68,
+     "kernels": 86,
+     "images_per_s": 11292
+    },
+    {
+     "recipe": "imagenet",
+     "method": "torchvision per image",
+     "wall_ms": 204.46,
+     "gpu_ms": 37.62,
+     "kernels": 22140,
+     "images_per_s": 1252
+    },
+    {
+     "recipe": "imagenet",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 23.48,
+     "gpu_ms": 18.57,
+     "kernels": 840,
+     "images_per_s": 10904
+    },
+    {
+     "recipe": "eval",
+     "method": "slangvision",
+     "wall_ms": 1.45,
+     "gpu_ms": 1.25,
+     "kernels": 9,
+     "images_per_s": 176015
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 11.28,
+     "gpu_ms": 11.45,
+     "kernels": 11,
+     "images_per_s": 22697
+    },
+    {
+     "recipe": "eval",
+     "method": "torchvision per image",
+     "wall_ms": 27.26,
+     "gpu_ms": 11.64,
+     "kernels": 2562,
+     "images_per_s": 9392
+    },
+    {
+     "recipe": "simclr",
+     "method": "slangvision",
+     "wall_ms": 3.03,
+     "gpu_ms": 2.82,
+     "kernels": 16,
+     "images_per_s": 84402
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision batch (one setting)",
+     "wall_ms": 30.68,
+     "gpu_ms": 22.4,
+     "kernels": 88,
+     "images_per_s": 8345
+    },
+    {
+     "recipe": "simclr",
+     "method": "torchvision per image",
+     "wall_ms": 228.45,
+     "gpu_ms": 45.61,
+     "kernels": 21813,
+     "images_per_s": 1121
+    },
+    {
+     "recipe": "simclr",
+     "method": "Kornia fp16 per image",
+     "wall_ms": 34.66,
+     "gpu_ms": 28.37,
+     "kernels": 980,
+     "images_per_s": 7386
+    }
+   ]
+  }
+ ]
+}

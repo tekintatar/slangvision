@@ -832,24 +832,39 @@ class GaussianBlur(Transform):
         self.sigma = Uniform(lo, hi)
         self.same_on_batch = bool(same_on_batch)
 
+    # Slots: sigma, then the normalized weights at offsets 0..radius of the
+    # horizontal kernel, then of the vertical one, computed once per image by
+    # the sampler so the passes do not evaluate exp per tap and pixel.
     def _slot_count(self) -> int:
-        return 1
+        return 3 + self.kernel_size[0] // 2 + self.kernel_size[1] // 2
+
+    def _weights(self, b: Binding) -> tuple[int, int]:
+        """The first weight slot of the horizontal and the vertical kernel."""
+        k = b.k(self) + 1
+        return k, k + 1 + self.kernel_size[0] // 2
 
     def _sample(self, b: Binding, rng: str) -> list[str]:
-        return [f"p[uint2({b.k(self)}, b)] = {self.sigma._draw(rng)};"]
+        lines = [f"{{ float sig = {self.sigma._draw(rng)}; p[uint2({b.k(self)}, b)] = sig;"]
+        for first, ksize in zip(self._weights(b), self.kernel_size):
+            r = ksize // 2      # torchvision's taps exp(-x^2 / 2 sigma^2), normalized
+            lines += [f"  {{ float ws = 0.0; for (int i = -{r}; i <= {r}; ++i) ws += gauss(abs(i), sig);",
+                      f"    for (int i = 0; i <= {r}; ++i) p[uint2({first} + i, b)] = "
+                      "gauss(i, sig) / ws; }"]
+        return lines + ["}"]
 
-    def _taps(self, b: Binding, radius: int, coord: str, size: str, load: str) -> list[str]:
-        return [f"float sig = {P(b.k(self))}; float4 acc = float4(0.0); float ws = 0.0;",
+    def _taps(self, first: int, radius: int, coord: str, size: str, load: str) -> list[str]:
+        return ["float4 acc = float4(0.0);",
                 f"for (int i = -{radius}; i <= {radius}; ++i) {{",
-                "    float w = gauss(i, sig); ws += w;",
-                f"    int q = reflect({coord} + i, {size}); acc += w * {load}; }}",
-                "return acc / ws;"]
+                f"    int q = reflect({coord} + i, {size}); acc += prm(p, b, {first} + abs(i)) * {load}; }}",
+                "return acc;"]
 
     def _pre(self, b: Binding) -> list[str] | None:
-        return self._taps(b, self.kernel_size[0] // 2, "x", "OW", "load_mid(src, q, y, b)")
+        return self._taps(self._weights(b)[0], self.kernel_size[0] // 2, "x", "OW",
+                          "load_mid(src, q, y, b)")
 
     def _input(self, b: Binding) -> list[str]:
-        return self._taps(b, self.kernel_size[1] // 2, "y", "OH", "load_mid(src, x, q, b)")
+        return self._taps(self._weights(b)[1], self.kernel_size[1] // 2, "y", "OH",
+                          "load_mid(src, x, q, b)")
 
     def __repr__(self) -> str:
         return f"GaussianBlur(kernel_size={self.kernel_size}, sigma={self.sigma})"

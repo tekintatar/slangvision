@@ -89,6 +89,14 @@
   bits through an int16 view of the output.
 
 ### Changed
+- Faster (RTX PRO 4500, batch 256): statistics pre-passes skip images that
+  do not use their op and, for antialiased bicubic or photos at least 5x the
+  output area, read a stored float32 resample instead of resampling again;
+  GaussianBlur computes its weights once per image. RandAugment 2.90 to
+  2.29 ms, TrivialAugmentWide 1.89 to 1.58, AutoAugment 3.07 to 2.49,
+  TimmRandAugment 2.85 to 2.22, SimCLR 3.05 to 2.57; the ImageNet recipe
+  with bicubic on 695x1024 photos 8.51 to 3.97 ms. Raw data in
+  `benchmarks/results/rtx_pro_4500_review_perf_2026-11-05.json`.
 - `NeighborhoodOp` is the name of the custom neighbourhood-op class, spelt
   like `ColorOp` and `Grayscale`; `NeighbourhoodOp` stays as an alias.
 - Clearer errors: a resize or crop after other transforms names the

@@ -37,5 +37,6 @@ float4 sharpen<I : IImage>(I img, int x, int y, float alpha)
     return clamp01(c + alpha * (blur - c));
 }
 
-// torchvision's gaussian kernel weight (unnormalized) at offset d
+// torchvision's gaussian kernel weight (unnormalized) at offset d; GaussianBlur
+// normalizes its taps once per image in the sampler
 float gauss(int d, float sigma) { float x = float(d) / sigma; return exp(-0.5 * x * x); }

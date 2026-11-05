@@ -1,0 +1,103 @@
+{
+ "meta": {
+  "date": "2026-11-05T19:57:41.950575+00:00",
+  "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+  "torch": "2.13.0+cu130",
+  "slangvision": "0.1.0",
+  "python": "3.12.3",
+  "batch": 256,
+  "interpolation": "bilinear",
+  "input_size": "384x512",
+  "images": null
+ },
+ "results": [
+  {
+   "recipe": "imagenet",
+   "method": "slangvision",
+   "wall_ms": 1.66,
+   "gpu_ms": 1.47,
+   "kernels": 13,
+   "images_per_s": 154220
+  },
+  {
+   "recipe": "imagenet",
+   "method": "torchvision batch (one setting)",
+   "wall_ms": 20.2,
+   "gpu_ms": 20.23,
+   "kernels": 87,
+   "images_per_s": 12673
+  },
+  {
+   "recipe": "imagenet",
+   "method": "torchvision per image",
+   "wall_ms": 202.86,
+   "gpu_ms": 35.73,
+   "kernels": 22126,
+   "images_per_s": 1262
+  },
+  {
+   "recipe": "imagenet",
+   "method": "Kornia fp16 per image",
+   "wall_ms": 19.28,
+   "gpu_ms": 14.0,
+   "kernels": 840,
+   "images_per_s": 13278
+  },
+  {
+   "recipe": "eval",
+   "method": "slangvision",
+   "wall_ms": 0.87,
+   "gpu_ms": 0.66,
+   "kernels": 9,
+   "images_per_s": 294006
+  },
+  {
+   "recipe": "eval",
+   "method": "torchvision batch (one setting)",
+   "wall_ms": 5.6,
+   "gpu_ms": 5.8,
+   "kernels": 10,
+   "images_per_s": 45749
+  },
+  {
+   "recipe": "eval",
+   "method": "torchvision per image",
+   "wall_ms": 27.62,
+   "gpu_ms": 7.65,
+   "kernels": 2562,
+   "images_per_s": 9269
+  },
+  {
+   "recipe": "simclr",
+   "method": "slangvision",
+   "wall_ms": 2.54,
+   "gpu_ms": 2.3,
+   "kernels": 15,
+   "images_per_s": 100707
+  },
+  {
+   "recipe": "simclr",
+   "method": "torchvision batch (one setting)",
+   "wall_ms": 20.52,
+   "gpu_ms": 26.47,
+   "kernels": 83,
+   "images_per_s": 12477
+  },
+  {
+   "recipe": "simclr",
+   "method": "torchvision per image",
+   "wall_ms": 221.04,
+   "gpu_ms": 40.35,
+   "kernels": 20367,
+   "images_per_s": 1158
+  },
+  {
+   "recipe": "simclr",
+   "method": "Kornia fp16 per image",
+   "wall_ms": 29.71,
+   "gpu_ms": 23.8,
+   "kernels": 980,
+   "images_per_s": 8617
+  }
+ ]
+}

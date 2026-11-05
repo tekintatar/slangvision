@@ -3,6 +3,10 @@
 #
 # Generated kernels, in launch order:
 #   sample_params      one thread per image draws every random value
+#   resample_0         when pass 0 resamples and has statistics, and the
+#                      resample is costly (see _SPLIT_AREA): the resample
+#                      alone, into float32; stats_<k>_r and stage_0_r then
+#                      read it instead of resampling again
 #   stats_<k>          per-image statistic k (contrast's mean): the same
 #                      pointwise chain, stopped at the op that needs it
 #   pre_<s>            optional pre-pass of a separable neighbourhood op
@@ -35,6 +39,32 @@ if TYPE_CHECKING:
 _RESAMPLE_SLOTS = 6
 _WINDOW_SLOTS = 4
 _CHUNK = 8              # columns per thread in statistic passes
+# A statistic pre-pass reruns its pass's input, in pass 0 the resample, for
+# the images that apply the op. Resampling once into float32 costs a write
+# and two reads of every image instead: it wins with antialiased bicubic, and
+# with bilinear from images of at least _SPLIT_AREA times the output's area
+# (mean over the batch). RTX PRO 4500, batch 256 at 224 px, bilinear, ms: the
+# ImageNet recipe 1.66 -> 1.61 at 3.9x, 2.03 -> 1.76 at 6x, 3.0 -> 2.1 at 14x;
+# ops on half the images lose below about 10x (RandomAutocontrast(p=0.5)
+# 1.42 -> 1.58 at 6x, 2.03 -> 1.89 at 14x; RandomEqualize(p=0.5), bound by
+# its histogram atomics, 1.60 -> 1.90 at 6x, 2.13 -> 2.22 at 14x): images
+# that skip an op cost its pre-pass almost nothing, so with bilinear the
+# copy is made only when pass 0's statistic ops apply at least once per
+# image on average (_stat_share). Ad-hoc measurements, one run each.
+_SPLIT_AREA = 5
+
+
+def _stat_share(t: Transform) -> float:
+    """How many statistic pre-passes t reads per image, on average."""
+    if isinstance(t, RandomApply):
+        return t.p * sum(_stat_share(c) for c in t.transforms)
+    if isinstance(t, RandomChoice):
+        return sum(w * _stat_share(c) for w, c in zip(t.p, t.transforms))
+    if not t._stat_layout():
+        return 0.0
+    if isinstance(t, ColorJitter):
+        return 1.0                              # contrast applies to every image
+    return float(getattr(t, "p", 1.0))
 
 # Intermediates between passes are (B, 3, H, W) tensors of type Mid (float16,
 # or float32 for float32 output); the output is (B, 3, H, W) of type Out. For
@@ -74,38 +104,44 @@ struct MidImage : IImage
     int width() { return w; }
     int height() { return h; }
 }
+// pass 0's resample, stored once when statistic pre-passes would redo it
+float4 load_f32(Tensor<float, 4> t, int x, int y, int b)
+{
+    return float4(t[uint4(x, y, 0, b)], t[uint4(x, y, 1, b)], t[uint4(x, y, 2, b)], 0.0);
+}
 """
 
 
-def _stats_kernel(kind: str, k: int, s: int, args: str, inp: str) -> list[str]:
-    """The statistic pre-pass of group k in pass s: one thread per _CHUNK
+def _stats_kernel(kind: str, name: str, k: int, s: int, args: str, inp: str) -> list[str]:
+    """The statistic pre-pass `name` of group k in pass s: one thread per _CHUNK
     pixels of a row, reading the image just before the op that needs it.
-    Images that do not apply the op stop at their first pixel (`hit` is the
-    same for the whole image); their statistic slots are never read."""
+    Images that do not apply the op stop before reading a pixel (`hit` does
+    not depend on pixel values); their statistic slots are never read."""
     def loop(skip: str) -> list[str]:
-        return [f"    for (int j = 0; j < {_CHUNK}; ++j) {{",
+        return [f"    chain_{s}(float4(0.0), p, st, b, 0, y, {k}, hit);",
+                f"    if (!hit) return{skip};",
+                f"    for (int j = 0; j < {_CHUNK}; ++j) {{",
                 f"        int x = pix.x * {_CHUNK} + j;",
                 "        if (x >= OW) break;",
-                f"        float4 c = chain_{s}({inp}, p, st, b, x, y, {k}, hit);",
-                f"        if (!hit) return{skip};"]
+                f"        float4 c = chain_{s}({inp}, p, st, b, x, y, {k}, hit);"]
     head = f"(int3 pix, {args}, Tensor<float, 2> p, Tensor<float, 2> st"
     if kind in ("mean", "mean_pil"):   # gray sum; Compose divides by the pixel count
         # mean_pil: Pillow's uint8 luma, summed exactly (whole numbers below 2**24)
         gray = "float(luma_pil(c))" if kind == "mean_pil" else "gray(c)"
-        return [f"float stats_{k}{head}, int OW, int OH)", "{",
+        return [f"float {name}{head}, int OW, int OH)", "{",
                 "    int b = pix.z; int y = pix.y; bool hit; float sum = 0.0;",
                 *loop(" 0.0"), f"        sum += {gray};", "    }", "    return sum;", "}", ""]
     if kind == "minmax":       # per-channel min and max of these pixels
-        return [f"void stats_{k}{head}, RWTensor<float, 4> part, int OW, int OH)", "{",
+        return [f"void {name}{head}, RWTensor<float, 4> part, int OW, int OH)", "{",
                 "    int b = pix.z; int y = pix.y; bool hit;",
                 "    float4 lo = float4(3.0e38); float4 hi = float4(-3.0e38);",
                 *loop(""), "        lo = min(lo, c); hi = max(hi, c);", "    }",
-                "    part[uint4(0, pix.x, y, b)] = lo.x; part[uint4(1, pix.x, y, b)] = lo.y;",
-                "    part[uint4(2, pix.x, y, b)] = lo.z; part[uint4(3, pix.x, y, b)] = hi.x;",
-                "    part[uint4(4, pix.x, y, b)] = hi.y; part[uint4(5, pix.x, y, b)] = hi.z;",
+                "    part[uint4(pix.x, y, 0, b)] = lo.x; part[uint4(pix.x, y, 1, b)] = lo.y;",
+                "    part[uint4(pix.x, y, 2, b)] = lo.z; part[uint4(pix.x, y, 3, b)] = hi.x;",
+                "    part[uint4(pix.x, y, 4, b)] = hi.y; part[uint4(pix.x, y, 5, b)] = hi.z;",
                 "}", ""]
     # "lut": 256-bin histograms of the quantized channels, for images that apply the op
-    return [f"void stats_{k}{head}, uint64_t hist, int OW, int OH)", "{",
+    return [f"void {name}{head}, uint64_t hist, int OW, int OH)", "{",
             "    int b = pix.z; int y = pix.y; bool hit;",
             "    uint* h = (uint*)(hist) + b * 768;",
             "    int qx = -1; int qy = -1; int qz = -1; uint nx = 0u; uint ny = 0u; uint nz = 0u;",
@@ -120,8 +156,8 @@ def _stats_kernel(kind: str, k: int, s: int, args: str, inp: str) -> list[str]:
 def _autocontrast_stats(part: "torch.Tensor", st: "torch.Tensor", k: int) -> None:
     """torchvision's autocontrast_image: per-channel min and (max - min), with
     (0, 1) for a constant channel."""
-    lo = part[..., :3].amin((1, 2))
-    hi = part[..., 3:].amax((1, 2))
+    lo = part[:, :3].amin((2, 3))
+    hi = part[:, 3:].amax((2, 3))
     flat = hi == lo
     st[:, k:k + 3] = lo.masked_fill(flat, 0.0)
     st[:, k + 3:k + 6] = (hi - lo).masked_fill(flat, 1.0)
@@ -309,6 +345,9 @@ class Compose:
         self._bicubic = getattr(self._resample, "interpolation", "") == "bicubic"
         if self._size:
             self._check_blur(self._size)
+        self._can_split = self._antialias and self._resample is not None and any(
+            t._stat_layout() for t in _walk(self._stages[0]))
+        self._stat_reads = sum(_stat_share(t) for t in self._stages[0])
 
         b = Binding()
         b.nparams = _RESAMPLE_SLOTS
@@ -448,15 +487,27 @@ class Compose:
                                else t._apply(b))]
             src += ["    return c;", "}", ""]
 
-        # pass kernels and statistic pre-passes
+        # pass kernels and statistic pre-passes; with _can_split, pass 0's
+        # also in a version (suffix _r) reading resample_0's output
+        source = "Tensor<int64_t, 1> ptrs, Tensor<int, 2> meta"
+        resampled = "input_0(source_@LAYOUT@(ptrs, meta, b), p, b, x, y, OW, OH)"
+        if self._can_split:
+            src += [f"void resample_0(int3 pix, {source}, Tensor<float, 2> p,",
+                    "                RWTensor<float, 4> dst, int OW, int OH)",
+                    "{",
+                    "    int b = pix.z; int x = pix.x; int y = pix.y;",
+                    f"    float4 c = {resampled};",
+                    "    dst[uint4(x, y, 0, b)] = c.x; dst[uint4(x, y, 1, b)] = c.y; "
+                    "dst[uint4(x, y, 2, b)] = c.z;",
+                    "}", ""]
         last = len(self._stages) - 1
         for s in range(len(self._stages)):
             if s == 0:
-                args = "Tensor<int64_t, 1> ptrs, Tensor<int, 2> meta"
-                inp = "input_0(source_@LAYOUT@(ptrs, meta, b), p, b, x, y, OW, OH)"
+                inputs = [("", source, resampled)]
+                if self._can_split:
+                    inputs.append(("_r", "Tensor<float, 4> src", "load_f32(src, x, y, b)"))
             else:
-                args = "Tensor<Mid, 4> src"
-                inp = f"input_{s}(src, p, b, x, y, OW, OH)"
+                inputs = [("", "Tensor<Mid, 4> src", f"input_{s}(src, p, b, x, y, OW, OH)")]
             dst = "RWTensor<Out, 4>" if s == last else "RWTensor<Mid, 4>"
             if s == last:
                 erase = [ln for e in self._erasing for ln in e._erase(b)]
@@ -464,17 +515,26 @@ class Compose:
                                   "store_out(dst, x, y, b, c);"])
             else:
                 store = "store_mid(dst, x, y, b, c);"
-            src += [f"void stage_{s}(int3 pix, {args}, Tensor<float, 2> p, Tensor<float, 2> st,",
-                    f"             {dst} dst, int OW, int OH, float4 mean, float4 inv_std)",
-                    "{",
-                    "    int b = pix.z; int x = pix.x; int y = pix.y; bool hit;",
-                    f"    float4 c = chain_{s}({inp}, p, st, b, x, y, -1, hit);",
-                    f"    {store}",
-                    "}", ""]
-            for kind, k, stat_stage in b.stat_groups:
-                if stat_stage == s:
-                    src += _stats_kernel(kind, k, s, args, inp)
+            for suffix, args, inp in inputs:
+                src += [f"void stage_{s}{suffix}(int3 pix, {args}, Tensor<float, 2> p, "
+                        "Tensor<float, 2> st,",
+                        f"             {dst} dst, int OW, int OH, float4 mean, float4 inv_std)",
+                        "{",
+                        "    int b = pix.z; int x = pix.x; int y = pix.y; bool hit;",
+                        f"    float4 c = chain_{s}({inp}, p, st, b, x, y, -1, hit);",
+                        f"    {store}",
+                        "}", ""]
+                for kind, k, stat_stage in b.stat_groups:
+                    if stat_stage == s:
+                        src += _stats_kernel(kind, f"stats_{k}{suffix}", k, s, args, inp)
         return "\n".join(src)
+
+    def _split(self, dims: list, OH: int, OW: int) -> bool:
+        """Whether pass 0 resamples once into float32 for its statistics."""
+        if not self._can_split:
+            return False
+        area = sum(h * w for h, w in dims) / len(dims)
+        return self._bicubic or (area >= _SPLIT_AREA * OH * OW and self._stat_reads >= 1.0)
 
     def _flip_lines(self, stage: int) -> list[str]:
         """The flips that pass `stage`'s input applies to its coordinates."""
@@ -583,11 +643,16 @@ class Compose:
                 tmp = torch.empty(B, 3, OH, OW, dtype=dtype, device=dev)
                 getattr(m, f"pre_{s}")(spy.grid((B, OH, OW)), cur, params, tmp, OW, OH)
                 cur = tmp
-            inputs = (table.ptrs, table.meta) if s == 0 else (cur,)
+            inputs: tuple = (table.ptrs, table.meta) if s == 0 else (cur,)
+            suffix = ""
+            if s == 0 and self._split(table.dims, OH, OW):
+                cur = torch.empty(B, 3, OH, OW, dtype=torch.float32, device=dev)
+                m.resample_0(spy.grid((B, OH, OW)), *inputs, params, cur, OW, OH)
+                inputs, suffix = (cur,), "_r"
             for kind, k, stat_stage in self._b.stat_groups:
                 if stat_stage != s:
                     continue
-                fn, grid = getattr(m, f"stats_{k}"), spy.grid((B, OH, chunks))
+                fn, grid = getattr(m, f"stats_{k}{suffix}"), spy.grid((B, OH, chunks))
                 if kind == "mean":
                     part = fn(grid, *inputs, params, st, OW, OH)
                     st[:, k] = part.sum((1, 2)) / float(OH * OW)
@@ -596,7 +661,7 @@ class Compose:
                     luma = part.sum((1, 2), dtype=torch.float64) / float(OH * OW)
                     st[:, k] = (torch.floor(luma + 0.5) / 255.0).float()
                 elif kind == "minmax":
-                    part = torch.empty(B, OH, chunks, 6, dtype=torch.float32, device=dev)
+                    part = torch.empty(B, 6, OH, chunks, dtype=torch.float32, device=dev)
                     fn(grid, *inputs, params, st, part, OW, OH)
                     _autocontrast_stats(part, st, k)
                 else:
@@ -607,8 +672,8 @@ class Compose:
                     _equalize_stats(hist, OH * OW, st, k)
             dst = final if s == len(self._stages) - 1 else torch.empty(B, 3, OH, OW, dtype=dtype,
                                                                        device=dev)
-            getattr(m, f"stage_{s}")(spy.grid((B, OH, OW)), *inputs, params, st, dst, OW, OH,
-                                     mean, inv_std)
+            getattr(m, f"stage_{s}{suffix}")(spy.grid((B, OH, OW)), *inputs, params, st, dst,
+                                             OW, OH, mean, inv_std)
             cur = dst
         return out, params
 

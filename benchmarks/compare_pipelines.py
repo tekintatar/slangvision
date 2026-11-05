@@ -27,8 +27,9 @@
 #             create_transform on Pillow images, one CPU core
 #   pip install timm (for timmaug)
 #   --recipes imagenet,randaug runs a subset
-# Input: a batch of photo-like 512x384 uint8 images already on the GPU, or
-# with --images DIR the first --batch JPEGs under DIR decoded on the GPU as a
+# Input: a batch of photo-like 512x384 uint8 images already on the GPU
+# (--input-size HxW changes their size, e.g. 695x1024 for FGVC-sized
+# photos), or with --images DIR the first --batch JPEGs under DIR decoded on the GPU as a
 # list of their own sizes (then torchvision runs per image only: different
 # sizes cannot form one batch). Decoding is not timed. --interpolation
 # bicubic switches RandomResizedCrop/Resize in both libraries. Times are the median wall time of synced calls
@@ -76,6 +77,35 @@
 #
 #   recipe     slangvision   timm per image (Pillow, 1 CPU core)
 #   timmaug    2.87 (2.52)   310
+#
+# Review fixes, 2026-11-05 (rtx_pro_4500_review_perf_2026-11-05.json; before
+# and after interleaved, two runs each, within 2% of each other): statistic
+# pre-passes skip images without the op before reading pixels, GaussianBlur
+# weights come from the sampler, and pass-0 statistics read a stored float32
+# resample with bicubic or inputs of 5x the output's area or more. slangvision,
+# wall ms (GPU ms), before -> after:
+#
+#   recipe      384x512 bilinear          695x1024 bilinear       695x1024 bicubic
+#   imagenet    1.68 (1.47) -> 1.69 (1.48) 2.89 (2.65) -> 2.07 (1.88) 8.51 (8.2) -> 3.97 (3.93)
+#   eval        -                         1.45 (1.25) -> 1.45 (1.25) 3.72 (3.61) -> 3.72 (3.61)
+#   simclr      3.05 (2.78) -> 2.57 (2.35) 4.10 (4.06) -> 3.03 (2.83) 9.18 (9.18) -> 4.96 (5.09)
+#   randaug     2.90 (2.58) -> 2.29 (1.96)
+#   trivialaug  1.89 (1.60) -> 1.58 (1.30)
+#   autoaug     3.07 (2.74) -> 2.49 (2.17)
+#   timmaug     2.85 (2.51) -> 2.22 (1.87)
+#
+# Final code after the review fixes, 2026-11-05 (rtx_pro_4500_2026-11-05.json;
+# the README's table), same box:
+#
+#   recipe     slangvision   torchvision batch   torchvision per image   Kornia fp16
+#   imagenet   1.66 (1.47)   20.2 (20.2)         203 (35.7)              19.3 (14.0)
+#   eval       0.87 (0.66)   5.60 (5.80)         27.6 (7.65)             -
+#   simclr     2.54 (2.30)   20.5 (26.5)         221 (40.4)              29.7 (23.8)
+#
+# and on 256 FGVC-Aircraft JPEGs (--images; rtx_pro_4500_fgvc_aircraft_
+# {bilinear,bicubic}_after_review_2026-11-05.json), slangvision bilinear /
+# bicubic: imagenet 2.34 / 4.36, eval 1.76 / 4.27, simclr 4.03 / 5.34
+# (before: 3.24 / 9.40, 1.79 / 4.30, 4.70 / 11.1).
 #
 # Honest read:
 # - torchvision's batch mode draws ONE random setting for the whole batch, so
@@ -257,6 +287,8 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--iters", type=int, default=20)
     ap.add_argument("--interpolation", default="bilinear", choices=["bilinear", "bicubic"])
+    ap.add_argument("--input-size", default="384x512",
+                    help="HxW of the generated photo-like images (ignored with --images)")
     ap.add_argument("--images", help="folder of JPEGs: time on the first --batch of them, "
                                      "decoded on the GPU as a list of their own sizes")
     ap.add_argument("--recipes", help="comma-separated subset of the recipes")
@@ -265,7 +297,8 @@ def main() -> None:
     if not torch.cuda.is_available():
         raise SystemExit("needs a CUDA GPU")
 
-    x = jpeg_list(args.images, args.batch) if args.images else photo_batch(args.batch)
+    h, w = (int(v) for v in args.input_size.split("x"))
+    x = jpeg_list(args.images, args.batch) if args.images else photo_batch(args.batch, h, w)
     tv = torchvision_recipes(args.interpolation)
     ko = {} if args.images or args.interpolation != "bilinear" else kornia_recipes()
     rows = []
@@ -296,6 +329,7 @@ def main() -> None:
                 "torch": torch.__version__, "slangvision": A.__version__,
                 "python": platform.python_version(), "batch": args.batch,
                 "interpolation": args.interpolation,
+                "input_size": None if args.images else args.input_size,
                 "images": args.images and Path(args.images).name}
         with open(args.json, "w") as f:
             json.dump({"meta": meta, "results": rows}, f, indent=1)

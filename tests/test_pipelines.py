@@ -757,6 +757,30 @@ def test_step_policy_ops_match_torchvision_off_their_edges(op, images):
     assert _mismatch([A.RandomResizedCrop(96), A.ColorJitter(0.4, 0.4), op], images) < 2e-3
 
 
+@pytest.mark.parametrize("interpolation, dtype, layout", [
+    ("bilinear", torch.float32, "chw"), ("bicubic", torch.float32, "chw"),
+    ("bilinear", torch.bfloat16, "hwc"), ("bicubic", torch.float16, "hwc")])
+def test_pass_0_statistics_match_whether_the_resample_is_stored_or_redone(
+        interpolation, dtype, layout, images, monkeypatch):
+    # Compose._split decides by image size and how often the statistic ops
+    # apply; both ways give the same output, up to float rounding where the
+    # compiler fuses the resample into the chain (one step of a 16-bit output)
+    transforms = [A.RandomResizedCrop(96, interpolation=interpolation), A.RandomHorizontalFlip(),
+                  A.ColorJitter(0.4, 0.4, 0.4, 0.1), A.RandomAutocontrast(p=0.5),
+                  A.RandomEqualize(p=0.5), A.Normalize(MEAN, STD)]
+    pipe = A.Compose(transforms, dtype=dtype)
+    inputs = [im.permute(1, 2, 0).contiguous() for im in images] if layout == "hwc" else images
+    assert pipe._split([tuple(im.shape[1:]) for im in images], 96, 96)
+    torch.manual_seed(0)
+    stored, params = pipe._run(inputs, layout)
+    monkeypatch.setattr(A.Compose, "_split", lambda self, dims, OH, OW: False)
+    redone = pipe._run(inputs, layout, params=params)[0]
+    step = {torch.float32: 1e-5, torch.float16: 2e-3, torch.bfloat16: 1.6e-2}[dtype]
+    assert (redone.float() - stored.float()).abs().max().item() <= step
+    if dtype == torch.float32:
+        assert _mismatch(transforms, images) < 2e-3
+
+
 def test_statistics_in_later_passes_and_containers_match_torchvision(images):
     # the min/max and histograms are taken in the pass after a blur, after a
     # contrast change (its own statistic), and only for images that choose them
@@ -1379,3 +1403,8 @@ def test_gaussian_noise_same_on_batch_adds_one_field(batch):
     assert torch.equal(out, out[:1].expand_as(out)) and out.std().item() > 0.05
     free = A.Compose([A.GaussianNoise(sigma=0.1)], dtype=torch.float32)(flat)
     assert not torch.equal(free[0], free[1])
+
+
+def test_one_tap_blurs_match_torchvision(batch):
+    _check([A.RandomCrop(64), A.GaussianBlur((1, 5), sigma=(0.5, 2.0))], batch)
+    _check([A.RandomCrop(64), A.GaussianBlur(1)], batch)
