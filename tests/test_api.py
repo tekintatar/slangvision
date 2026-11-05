@@ -100,6 +100,19 @@ def test_rand_augment_builds_one_pass_per_op():
     assert "RandAugment(num_ops=3" in repr(pipe)
 
 
+def test_trivial_augment_and_auto_augment_build_their_passes():
+    class Policy:                   # stands in for torchvision's AutoAugmentPolicy
+        value = "svhn"
+
+    assert A.AutoAugment(Policy()).policy == "svhn"
+    for policy, passes in ((A.TrivialAugmentWide(), 1), (A.AutoAugment("cifar10"), 2)):
+        pipe = A.Compose([A.RandomResizedCrop(224), policy, A.Normalize(MEAN, STD)])
+        assert f"stage_{passes}" in pipe.source and f"stage_{passes + 1}" not in pipe.source
+        assert [kind for kind, _, _ in pipe._b.stat_groups] == ["mean", "minmax", "lut"] * passes
+    assert "AutoAugment(policy='cifar10'" in repr(A.AutoAugment("cifar10"))
+    assert "TrivialAugmentWide(num_magnitude_bins=31" in repr(A.TrivialAugmentWide())
+
+
 def test_timm_rand_augment_parses_timm_configs_and_builds_one_pass_per_layer():
     ra = A.TimmRandAugment()
     assert (ra.magnitude, ra.num_layers, ra.prob, ra.magnitude_std, ra.increasing) == \
@@ -186,6 +199,11 @@ def test_timm_rand_augment_parses_timm_configs_and_builds_one_pass_per_layer():
     (lambda: A.RandAugment(fill=2.0), "0-1 scale"),
     (lambda: A.RandomApply([A.RandAugment()]), "policies"),
     (lambda: A.Compose([A.RandAugment(), A.RandomResizedCrop(64)]), "must come first"),
+    (lambda: A.TrivialAugmentWide(num_magnitude_bins=1), "num_magnitude_bins"),
+    (lambda: A.TrivialAugmentWide(interpolation="bicubic"), "nearest or bilinear"),
+    (lambda: A.AutoAugment("reduced_imagenet"), "imagenet, cifar10 or svhn"),
+    (lambda: A.AutoAugment(fill=-0.1), "0-1 scale"),
+    (lambda: A.RandomChoice([A.AutoAugment()]), "policies"),
     (lambda: A.TimmRandAugment("augmix-m5"), "start with 'rand'"),
     (lambda: A.TimmRandAugment("rand-m9-tweights"), "transform sets"),
     (lambda: A.TimmRandAugment("rand-m9-w0"), "unknown config section"),

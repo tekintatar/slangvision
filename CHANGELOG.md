@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- `TrivialAugmentWide` and `AutoAugment` (torchvision's, with the ImageNet,
+  CIFAR10 and SVHN policies), drawn per image on the same op pass as
+  `RandAugment`: 1.9 and 3.1 ms per batch of 256 after a crop and flip (RTX
+  PRO 4500), against 82 and 95 ms for torchvision per image.
 - `TimmRandAugment`: timm's RandAugment from its config string (`m`, `n`,
   `p`, `mstd`, `mmax`, `inc`; default `"rand-m9-mstd0.5-inc1"`), with
   Pillow's ops as timm runs them (affine resampling with a hard edge and the

@@ -29,6 +29,7 @@ from ._base import Choice, ColorOp, NeighbourhoodOp, Uniform
 from ._compile import Compose
 from .mixing import CutMix, MixUp, MixUpCutMix
 from .transforms import (
+    AutoAugment,
     CenterCrop,
     ColorJitter,
     GaussianBlur,
@@ -54,10 +55,12 @@ from .transforms import (
     RandomVerticalFlip,
     Resize,
     TimmRandAugment,
+    TrivialAugmentWide,
 )
 
 __all__ = [
     "__version__",
+    "AutoAugment",
     "CenterCrop",
     "Choice",
     "ColorJitter",
@@ -90,5 +93,6 @@ __all__ = [
     "RandomVerticalFlip",
     "Resize",
     "TimmRandAugment",
+    "TrivialAugmentWide",
     "Uniform",
 ]

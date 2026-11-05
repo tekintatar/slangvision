@@ -787,6 +787,7 @@ def many(batch):
     A.RandAugment(num_ops=1),
     A.RandAugment(num_ops=1, magnitude=20, fill=0.5),
     A.RandAugment(num_ops=1, magnitude=0, num_magnitude_bins=5),
+    A.RandAugment(num_ops=1, magnitude=21, num_magnitude_bins=25, interpolation="bilinear"),
 ], ids=repr)
 def test_one_rand_augment_op_on_unresampled_images_matches_torchvision(ra, many):
     # one op on k/255 values: the step ops (posterize, solarize, equalize) see
@@ -847,9 +848,98 @@ def test_rand_augment_draws_ops_and_signs_per_image(batch):
         k = pipe._b.k(step)
         counts = torch.bincount(params[:, k].long(), minlength=14).float() / len(params)
         assert (counts - 1 / 14).abs().max() < 0.015
-        assert abs((params[:, k + 1] > 0).float().mean().item() - 0.5) < 0.03
+        assert abs((params[:, k + 2] > 0).float().mean().item() - 0.5) < 0.03
     k = pipe._b.k(shared._children()[0])
-    assert torch.all(params[:, k] == params[0, k]) and torch.all(params[:, k + 1] == params[0, k + 1])
+    assert torch.all(params[:, k:k + 12] == params[0, k:k + 12])
+
+
+# ------------------------------------------ TrivialAugmentWide and AutoAugment
+@pytest.mark.parametrize("ta", [
+    A.TrivialAugmentWide(interpolation="bilinear"),
+    A.TrivialAugmentWide(num_magnitude_bins=7, interpolation="bilinear", fill=(0.2, 0.4, 0.6)),
+    # 5 bins: posterize's bits land on exact halves (6.5 -> 6), rounded to even
+    A.TrivialAugmentWide(num_magnitude_bins=5, interpolation="bilinear"),
+    A.TrivialAugmentWide(),
+], ids=repr)
+def test_trivial_augment_on_unresampled_images_matches_torchvision(ta, many):
+    # as RandAugment: exact with bilinear warps; nearest only differs at
+    # rounding ties, which the wide shears (to 0.99) put on more rows
+    pipe = A.Compose([ta], dtype=torch.float32)
+    torch.manual_seed(0)
+    out, params = pipe._run(many, "chw")
+    assert set(params[:, pipe._b.k(ta._children()[0])].int().tolist()) == set(range(14))
+    bad = ((out - _replay(pipe, many, params)).abs() > TOL32).float().mean().item()
+    assert bad < (1e-9 if ta.interpolation == "bilinear" else 5e-3)
+
+
+@pytest.fixture(scope="module")
+def more(batch):
+    """240 unresampled images: enough for all 25 sub-policies to come up."""
+    return batch.repeat(40, 1, 1, 1)
+
+
+@pytest.mark.parametrize("policy", ["imagenet", "cifar10", "svhn"])
+def test_auto_augment_on_unresampled_images_matches_torchvision(policy, more):
+    # the second op may meet a level edge of posterize, solarize or equalize
+    # in the first op's (bilinear) output
+    aa = A.AutoAugment(policy, interpolation="bilinear")
+    pipe = A.Compose([aa], dtype=torch.float32)
+    torch.manual_seed(0)
+    out, params = pipe._run(more, "chw")
+    assert set(params[:, pipe._b.k(aa._children()[0]) + 1].int().tolist()) == set(range(25))
+    assert ((out - _replay(pipe, more, params)).abs() > TOL32).float().mean().item() < 1e-3
+
+
+@pytest.mark.parametrize("policy", [
+    A.TrivialAugmentWide(),
+    A.TrivialAugmentWide(num_magnitude_bins=11, interpolation="bilinear", fill=0.5),
+    A.AutoAugment(),
+    A.AutoAugment("cifar10", interpolation="bilinear", fill=0.5),
+    A.AutoAugment("svhn"),
+], ids=repr)
+def test_policies_in_a_recipe_match_torchvision_off_level_edges(policy, images):
+    assert _mismatch([A.RandomResizedCrop(96), A.RandomHorizontalFlip(), policy,
+                      A.RandomVerticalFlip(), A.Normalize(MEAN, STD)], images) < 3e-3
+
+
+def test_policies_float16_output(images):
+    # as RandAugment: equalize after a float16 intermediate (or a float16
+    # resample, for TrivialAugmentWide's one pass) moves some values a level
+    for policy in (A.TrivialAugmentWide(interpolation="bilinear"),
+                   A.AutoAugment(interpolation="bilinear")):
+        torch.manual_seed(0)
+        pipe = A.Compose([A.RandomResizedCrop(96), policy, A.Normalize(MEAN, STD)])
+        out, params = pipe._run(images, "chw")
+        d = (out.float() - _replay(pipe, images, params)).abs()
+        assert (d > TOL16).float().mean().item() < 5e-2
+        assert torch.quantile(d.flatten()[::7], 0.9).item() < TOL16
+
+
+def test_trivial_augment_and_auto_augment_draws(batch):
+    ta = A.TrivialAugmentWide(num_magnitude_bins=11)
+    aa = A.AutoAugment("imagenet")
+    shared = A.AutoAugment("svhn", same_on_batch=True)
+    pipe = A.Compose([A.Resize((40, 50)), ta, aa, shared])
+    torch.manual_seed(0)
+    _, params = pipe._run(batch.repeat(1000, 1, 1, 1), "chw")
+    n = len(params)
+    k = pipe._b.k(ta._children()[0])
+    assert (torch.bincount(params[:, k].long(), minlength=14).float() / n - 1 / 14).abs().max() < 0.012
+    assert (torch.bincount(params[:, k + 1].long(), minlength=11).float() / n - 1 / 11).abs().max() < 0.012
+    assert abs((params[:, k + 2] < 0).float().mean().item() - 0.5) < 0.02
+    subs = A.transforms._AA_POLICIES["imagenet"]
+    k0, k1 = (pipe._b.k(step) for step in aa._children())
+    sp = params[:, k0 + 1].long()
+    assert torch.equal(sp, params[:, k1 + 1].long())        # one sub-policy per image
+    assert (torch.bincount(sp, minlength=25).float() / n - 1 / 25).abs().max() < 0.01
+    for j, k in enumerate((k0, k1)):
+        ops = torch.tensor([A.transforms._TV_OPS.index(s[j][0]) for s in subs])[sp.cpu()]
+        on = params[:, k].cpu() >= 0
+        assert torch.equal(params[on, k].cpu().long(), ops[on])
+        expected = torch.tensor([s[j][1] for s in subs])[sp.cpu()].mean().item()
+        assert abs(on.float().mean().item() - expected) < 0.02
+    k = pipe._b.k(shared._children()[0])
+    assert torch.all(params[:, k:k + 12] == params[0, k:k + 12])
 
 
 # ---------------------------------------------------------- timm RandAugment

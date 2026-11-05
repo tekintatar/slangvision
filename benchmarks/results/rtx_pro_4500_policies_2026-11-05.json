@@ -1,0 +1,118 @@
+{
+ "meta": {
+  "date": "2026-11-05T08:14:15.566580+00:00",
+  "gpu": "NVIDIA RTX PRO 4500 Blackwell Server Edition",
+  "torch": "2.13.0+cu130",
+  "slangvision": "0.1.0",
+  "python": "3.12.3",
+  "batch": 256,
+  "interpolation": "bilinear",
+  "images": null
+ },
+ "results": [
+  {
+   "recipe": "imagenet",
+   "method": "slangvision",
+   "wall_ms": 1.68,
+   "gpu_ms": 1.45,
+   "kernels": 13,
+   "images_per_s": 151991
+  },
+  {
+   "recipe": "imagenet",
+   "method": "torchvision batch (one setting)",
+   "wall_ms": 20.12,
+   "gpu_ms": 19.88,
+   "kernels": 87,
+   "images_per_s": 12722
+  },
+  {
+   "recipe": "imagenet",
+   "method": "torchvision per image",
+   "wall_ms": 223.74,
+   "gpu_ms": 35.78,
+   "kernels": 22142,
+   "images_per_s": 1144
+  },
+  {
+   "recipe": "imagenet",
+   "method": "Kornia fp16 per image",
+   "wall_ms": 19.85,
+   "gpu_ms": 14.02,
+   "kernels": 840,
+   "images_per_s": 12898
+  },
+  {
+   "recipe": "randaug",
+   "method": "slangvision",
+   "wall_ms": 2.91,
+   "gpu_ms": 2.58,
+   "kernels": 87,
+   "images_per_s": 88075
+  },
+  {
+   "recipe": "randaug",
+   "method": "torchvision batch (one setting)",
+   "wall_ms": 7.01,
+   "gpu_ms": 6.51,
+   "kernels": 31,
+   "images_per_s": 36532
+  },
+  {
+   "recipe": "randaug",
+   "method": "torchvision per image",
+   "wall_ms": 118.58,
+   "gpu_ms": 14.64,
+   "kernels": 7423,
+   "images_per_s": 2159
+  },
+  {
+   "recipe": "trivialaug",
+   "method": "slangvision",
+   "wall_ms": 1.89,
+   "gpu_ms": 1.6,
+   "kernels": 48,
+   "images_per_s": 135369
+  },
+  {
+   "recipe": "trivialaug",
+   "method": "torchvision batch (one setting)",
+   "wall_ms": 4.8,
+   "gpu_ms": 4.54,
+   "kernels": 18,
+   "images_per_s": 53356
+  },
+  {
+   "recipe": "trivialaug",
+   "method": "torchvision per image",
+   "wall_ms": 81.91,
+   "gpu_ms": 10.29,
+   "kernels": 5033,
+   "images_per_s": 3125
+  },
+  {
+   "recipe": "autoaug",
+   "method": "slangvision",
+   "wall_ms": 3.09,
+   "gpu_ms": 2.76,
+   "kernels": 87,
+   "images_per_s": 82969
+  },
+  {
+   "recipe": "autoaug",
+   "method": "torchvision batch (one setting)",
+   "wall_ms": 5.18,
+   "gpu_ms": 4.4,
+   "kernels": 22,
+   "images_per_s": 49404
+  },
+  {
+   "recipe": "autoaug",
+   "method": "torchvision per image",
+   "wall_ms": 94.89,
+   "gpu_ms": 14.14,
+   "kernels": 6761,
+   "images_per_s": 2698
+  }
+ ]
+}

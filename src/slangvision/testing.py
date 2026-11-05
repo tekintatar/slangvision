@@ -114,25 +114,8 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
             if t.ranges[op]:
                 img = fns[op](img, row[k + op])
         return img
-    if isinstance(t, T.RandAugment):
-        from torchvision.transforms import v2
-
-        ra = v2.RandAugment(t.num_ops, t.magnitude, t.num_magnitude_bins,
-                            interpolation=_MODES[t.interpolation],
-                            fill=None if t.fill is None else list(t.fill))
-        h, w = img.shape[-2:]
-        names = list(ra._AUGMENTATION_SPACE)
-        for step in t._children():
-            k = b.k(step)
-            name = names[int(row[k])]
-            magnitudes_fn, signed = ra._AUGMENTATION_SPACE[name]
-            magnitudes = magnitudes_fn(ra.num_magnitude_bins, h, w)
-            magnitude = 0.0 if magnitudes is None else float(magnitudes[ra.magnitude])
-            if signed and row[k + 1] < 0:
-                magnitude = -magnitude
-            img = ra._apply_image_or_video_transform(  # type: ignore[assignment]
-                img, name, magnitude, interpolation=ra.interpolation, fill=ra._fill)
-        return img
+    if isinstance(t, (T.RandAugment, T.TrivialAugmentWide, T.AutoAugment)):
+        return _torchvision_policy(t, b, img, row)
     if isinstance(t, T.TimmRandAugment):
         return _timm_reference(t, b, img, row)
     if isinstance(t, (T.RandomAutocontrast, T.RandomEqualize, T.RandomAdjustSharpness)):
@@ -184,6 +167,44 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
     raise TypeError(f"no torch reference for {type(t).__name__}")
 
 
+def _torchvision_policy(t: Any, b: Binding, img: "torch.Tensor",
+                        row: list[float]) -> "torch.Tensor":
+    """torchvision's own policy: its op names, magnitude tables and op
+    functions, fed this image's drawn op (AutoAugment: sub-policy), bin,
+    application and sign."""
+    from torchvision.transforms import v2
+
+    kw = {"interpolation": _MODES[t.interpolation],
+          "fill": None if t.fill is None else list(t.fill)}
+    if isinstance(t, T.RandAugment):
+        tv: Any = v2.RandAugment(t.num_ops, t.magnitude, t.num_magnitude_bins, **kw)
+    elif isinstance(t, T.TrivialAugmentWide):
+        tv = v2.TrivialAugmentWide(t.num_magnitude_bins, **kw)
+    else:
+        tv = v2.AutoAugment(v2.AutoAugmentPolicy(t.policy), **kw)
+    h, w = img.shape[-2:]
+    names = list(tv._AUGMENTATION_SPACE)
+    for j, step in enumerate(t._children()):
+        k = b.k(step)
+        if row[k] < 0:
+            continue
+        if isinstance(t, T.AutoAugment):
+            name, _, idx = tv._policies[int(row[k + 1])][j]
+            bins = 10
+        else:
+            # RandAugment's bin is its magnitude; TrivialAugmentWide draws it
+            idx = t.magnitude if isinstance(t, T.RandAugment) else int(row[k + 1])
+            name, bins = names[int(row[k])], t.num_magnitude_bins
+        magnitudes_fn, signed = tv._AUGMENTATION_SPACE[name]
+        magnitudes = magnitudes_fn(bins, h, w)
+        magnitude = 0.0 if magnitudes is None else float(magnitudes[idx])
+        if signed and row[k + 2] < 0:
+            magnitude = -magnitude
+        img = tv._apply_image_or_video_transform(img, name, magnitude,
+                                                 interpolation=tv.interpolation, fill=tv._fill)
+    return img
+
+
 def _timm_reference(t: Any, b: Binding, img: "torch.Tensor", row: list[float]) -> "torch.Tensor":
     """timm's RandAugment ops on the image as a uint8 Pillow image, with this
     image's op, magnitude, sign and interpolation."""
@@ -206,14 +227,15 @@ def _timm_reference(t: Any, b: Binding, img: "torch.Tensor", row: list[float]) -
             name = names[int(row[k])]
             sign = row[k + 2]
             aa._randomly_negate = lambda v: -v if sign < 0 else v   # the drawn sign
-            level = aa.LEVEL_TO_ARG[name]
+            level: Any = aa.LEVEL_TO_ARG[name]
             args: tuple[Any, ...] = level(row[k + 1], hparams) if level is not None else ()
             resample = Image.Resampling.BICUBIC if row[k + 3] > 0.5 else Image.Resampling.BILINEAR
             if name.startswith("Posterize") and args[0] <= 0:
                 # keep no bits: black, as Pillow up to 12 gives (Pillow 13 raises)
                 pil = Image.new("RGB", pil.size)
                 continue
-            pil = aa.NAME_TO_OP[name](pil, *args, fillcolor=fill, resample=resample)
+            op: Any = aa.NAME_TO_OP[name]
+            pil = op(pil, *args, fillcolor=fill, resample=resample)
     finally:
         aa._randomly_negate = negate
     out = torch.from_numpy(np.asarray(pil).copy()).permute(2, 0, 1)

@@ -18,12 +18,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ._base import P, Binding, NeighbourhoodOp, Transform, _UserOp, lit
-from .transforms import (CenterCrop, ColorJitter, GaussianBlur, Normalize, Pad, RandAugment,
+from .transforms import (AutoAugment, CenterCrop, ColorJitter, GaussianBlur, Normalize, Pad,
+                         RandAugment,
                          RandomAdjustSharpness, RandomAffine, RandomApply, RandomAutocontrast,
                          RandomChoice, RandomCrop, RandomEqualize, RandomErasing,
                          RandomHorizontalFlip, RandomPerspective, RandomResizedCrop,
-                         RandomRotation, RandomVerticalFlip, Resize, TimmRandAugment, _Policy,
-                         _PolicyOp, _Window)
+                         RandomRotation, RandomVerticalFlip, Resize, TimmRandAugment,
+                         TrivialAugmentWide, _Policy, _PolicyOp, _Window)
 
 if TYPE_CHECKING:
     import torch
@@ -152,7 +153,8 @@ def _dtype_name(dtype: Any) -> str:
 _BUILT_IN = (RandomResizedCrop, Resize, CenterCrop, Pad, RandomCrop, RandomHorizontalFlip,
              RandomVerticalFlip, RandomRotation, RandomAffine, RandomPerspective, ColorJitter,
              GaussianBlur, RandomAdjustSharpness, RandomAutocontrast, RandomEqualize,
-             RandomApply, RandomChoice, Normalize, RandomErasing, RandAugment, TimmRandAugment)
+             RandomApply, RandomChoice, Normalize, RandomErasing, RandAugment, TimmRandAugment,
+             TrivialAugmentWide, AutoAugment)
 
 
 def _expand(transforms: Sequence[Transform]) -> list[Transform]:

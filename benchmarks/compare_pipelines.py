@@ -19,6 +19,9 @@
 #   randaug   RandomResizedCrop(224) + flip + RandAugment(2, 9) + Normalize
 #             (torchvision runs RandAugment on the uint8 crop, as its
 #             reference recipe does)
+#   trivialaug, autoaug  RandomResizedCrop(224) + flip + TrivialAugmentWide()
+#             or AutoAugment() (ImageNet policy) + Normalize (torchvision on
+#             the uint8 crop, as for randaug)
 #   timmaug   RandomResizedCrop(224) + flip + timm's RandAugment
 #             rand-m9-mstd0.5-inc1 + Normalize, against timm's own
 #             create_transform on Pillow images, one CPU core
@@ -58,6 +61,13 @@
 # randaug, added 2026-11-05 (rtx_pro_4500_randaug_2026-11-05.json):
 #
 #   randaug    2.88 (2.58)   6.32 (6.48)         111 (15.2)              -
+#
+# trivialaug and autoaug, added 2026-11-05 (rtx_pro_4500_policies_2026-11-05.json;
+# slangvision's imagenet and randaug in the same run within 2% of the rows
+# above, torchvision's per-image loop within 11%, its batched randaug 11%):
+#
+#   trivialaug 1.89 (1.60)   4.80 (4.54)         81.9 (10.3)             -
+#   autoaug    3.09 (2.76)   5.18 (4.40)         94.9 (14.1)             -
 #
 # timmaug, added 2026-11-05 (rtx_pro_4500_timmaug_2026-11-05.json; imagenet
 # and randaug in the same run within 2% of the rows above, torchvision's
@@ -123,6 +133,12 @@ def ours(interp: str = "bilinear") -> dict:
         "randaug": A.Compose([A.RandomResizedCrop(224, interpolation=interp),
                               A.RandomHorizontalFlip(), A.RandAugment(),
                               A.Normalize(MEAN, STD)]),
+        "trivialaug": A.Compose([A.RandomResizedCrop(224, interpolation=interp),
+                                 A.RandomHorizontalFlip(), A.TrivialAugmentWide(),
+                                 A.Normalize(MEAN, STD)]),
+        "autoaug": A.Compose([A.RandomResizedCrop(224, interpolation=interp),
+                              A.RandomHorizontalFlip(), A.AutoAugment(),
+                              A.Normalize(MEAN, STD)]),
         "timmaug": A.Compose([A.RandomResizedCrop(224, interpolation=interp),
                               A.RandomHorizontalFlip(),
                               A.TimmRandAugment("rand-m9-mstd0.5-inc1", interpolation=interp),
@@ -177,6 +193,8 @@ def torchvision_recipes(interp: str = "bilinear") -> dict:
         "rotate": v2.Compose(crop + [v2.RandomRotation(15), v2.ColorJitter(0.4, 0.4, 0.4, 0.1)]
                              + tail),
         "randaug": v2.Compose(crop + [v2.RandAugment()] + tail),
+        "trivialaug": v2.Compose(crop + [v2.TrivialAugmentWide()] + tail),
+        "autoaug": v2.Compose(crop + [v2.AutoAugment()] + tail),
     }
 
 

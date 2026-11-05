@@ -80,6 +80,8 @@ the GPU device once per process); later calls reuse the compiled kernels.
 | `RandomAdjustSharpness(sharpness_factor, p=0.5)` | decided per image; reads neighbouring pixels, so it starts a pass like a blur |
 | `RandomAutocontrast(p=0.5)` | decided per image; each image's per-channel min and max come from a pre-pass |
 | `RandAugment(num_ops=2, magnitude=9, num_magnitude_bins=31, interpolation="nearest", fill=None)` | ops, and the signs of their magnitudes, drawn per image; comes after the resize and crops; colour ops follow torchvision's float behaviour (see below) |
+| `TrivialAugmentWide(num_magnitude_bins=31, interpolation="nearest", fill=None)` | torchvision's: one op per image at a random magnitude bin; one pass after the resize and crops |
+| `AutoAugment(policy="imagenet", interpolation="nearest", fill=None)` | torchvision's: one of the policy's 25 sub-policies per image (`"imagenet"`, `"cifar10"`, `"svhn"` or `AutoAugmentPolicy`); two passes |
 | `TimmRandAugment(config="rand-m9-mstd0.5-inc1", interpolation="random", fill=(124, 116, 104) / 255, translate_pct=0.45)` | timm's RandAugment with Pillow's ops (see below); ops, magnitudes, signs and interpolation drawn per image; comes after the resize and crops |
 | `RandomEqualize(p=0.5)` | decided per image; as in torchvision for float images, the image is quantized to 256 levels and equalized with PIL's scheme, from per-image histograms built by a pre-pass; values outside [0, 1] (bicubic overshoot) are clamped first, where torchvision's cast is undefined |
 | `Normalize(mean, std)` | comes after everything except `RandomErasing` |
@@ -100,6 +102,20 @@ Each op runs as its own pass, so `RandAugment()` adds two passes. Its
 magnitudes are torchvision's float32 tables; torch computes those with a
 vectorized CPU kernel whose last bit varies between CPUs, and SlangVision
 computes them the plain way.
+
+`TrivialAugmentWide` (the policy behind torchvision's newer classification
+weights) and `AutoAugment` are torchvision's too, on the same op pass.
+TrivialAugmentWide picks one of the same 14 ops per image at a magnitude bin
+drawn uniformly, over its wider ranges (shear to 0.99, translate to 32
+pixels, rotate to 135 degrees, enhance factors 0.01 to 1.99, posterize down
+to 2 bits). AutoAugment picks one of the policy's 25 sub-policies per image
+and applies each of its two ops with that op's probability, at its
+magnitude bin of 10; its ops add invert. Its policies are torchvision's
+tables, checked entry by entry against torchvision in the tests. The
+magnitude tables are computed once, the plain float32 way; torch's own can
+differ in the last bit by CPU (on an Arm Mac, TrivialAugmentWide's translate
+at bin 15 of 31 is 15.999999, so torchvision shifts 15 pixels there and
+SlangVision 16).
 
 `TimmRandAugment` is timm's (`timm.data.rand_augment_transform`), the one
 DeiT, ConvNeXt, Swin and most timm recipes train with. It takes timm's
@@ -394,6 +410,7 @@ imports this module. `pipe.source` shows the generated Slang.
 | threshold ops (`RandomSolarize`) | a value landing exactly on the threshold may be inverted on one side and not the other; all other values match |
 | `RandomPosterize`, `RandomEqualize` | step functions: a resampled value within float rounding of a level edge can land on the other side. In one pass, about 1 value in 100,000 (posterize, by one level) and 1 in 30,000 to 1 in 3,000 depending on the ops before it (equalize, by up to 2/255: one moved pixel can shift the lookup table). After a blur, warp or sharpness with float16 output, the float16 image between passes moves more values across edges: about 1 in 1,000 for posterize and 1 in 100 for equalize (by up to 3/255). On images that are not resampled they match exactly |
 | `RandAugment` | float32 output: as its ops (above and below); in a recipe after a crop, under 3 in 1,000 values differ (step ops at level edges, nearest warps at rounding ties). float16 output: the float16 image between its passes makes equalize land a level (1/255) away from torchvision's float32 result for about 2% of values; `dtype=torch.float32` keeps float32 between passes (2.84 to 3.63 ms per batch of 256 in the RandAugment recipe, measured with an ad-hoc script) |
+| `TrivialAugmentWide`, `AutoAugment` | as `RandAugment`: float32 output exact on images that are not resampled with bilinear warps (AutoAugment's second op can meet a level edge in the first op's output: about 1 value in 100,000); in a recipe after a crop, a few values in a million differ with nearest warps (tests allow 3 in 1,000). float16 output: 2% (TrivialAugmentWide) to 3-4% (AutoAugment's ImageNet and SVHN policies) of values a level away where equalize follows a float16 intermediate |
 | `TimmRandAugment` | against timm on uint8 Pillow images, one op on images that are not resampled: invert, posterize, solarize, solarize-add and equalize match exactly; warps, brightness, contrast and autocontrast are 0 to 1 uint8 step above Pillow's (Pillow truncates); colour and sharpness up to half a step times |1 - factor| further (Pillow also rounds the luma and smoothed images: -0.45 to +1.45 steps at magnitudes up to 10). In a recipe after a crop (timm sees the crop rounded to uint8): mean difference under 0.6 steps, under 2 in 1,000 values more than 3 steps away (values near a posterize, solarize or equalize level edge), float32 and float16 output alike |
 | warps with `interpolation="nearest"` | about 1 pixel in 100,000 (1 in 20,000 for `RandomPerspective`) takes the neighbouring source pixel: torchvision computes the sampling positions in float32 with a different rounding, so a position within about 1e-5 pixels of a pixel boundary can go either way. Positions exactly on a half pixel, which round magnitudes can produce on whole rows (RandAugment's ShearX and ShearY at magnitude 20 shift every fifth row or column by a whole number plus a half: those pixels are the only ones that differ), round half to even here and either way in torchvision. Bilinear warps match like the other ops |
 | float16 output after a warp or blur | the image between passes is float16 too, so colour ops after it can scale that rounding (up to about 8e-3 at normalized values with `ColorJitter(0.4, 0.4, 0.4, 0.1)` after a warp) |
@@ -418,6 +435,10 @@ has the reference runs and raw data). How to read them:
   setting for all 256 (the `randaug` recipe in the benchmark script). Each
   op adds a pass and, for the images that choose them, contrast, autocontrast
   and equalize pre-passes.
+- `TrivialAugmentWide()` and `AutoAugment()` after a crop and flip: 1.89
+  and 3.09 ms per batch of 256 on an RTX PRO 4500, against 82 and 95 ms for
+  torchvision per image and 4.8 and 5.2 ms batched with one setting (the
+  `trivialaug` and `autoaug` recipes).
 - `TimmRandAugment()` (`rand-m9-mstd0.5-inc1`) after a crop and flip: 2.87
   ms per batch of 256 on an RTX PRO 4500, against 310 ms for timm's own
   `create_transform` pipeline on Pillow images on one CPU core (AMD EPYC
@@ -498,6 +519,5 @@ Training from scratch on its 6,667 trainval images (100 classes), batch
   at 224x224); split larger batches.
 - Run pipelines from one thread: the GPU device is created by, and tied to,
   the thread that runs the first pipeline (SlangPy devices are thread-affine).
-- Not yet: TrivialAugmentWide and AutoAugment (their ops are here), masks
-  and boxes. Warps cannot come before a resize or crop, and `RandomRotation`
+- Not yet: AugMix, masks and boxes. Warps cannot come before a resize or crop, and `RandomRotation`
   has no `expand=True`.

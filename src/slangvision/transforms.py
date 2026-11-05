@@ -825,12 +825,203 @@ class _PolicyOp(Transform):
         return f"{type(self).__name__}(of {self.parent!r})"
 
 
-# torchvision's RandAugment ops, in its order (index = the op's code below)
-_RA_OPS = ("Identity", "ShearX", "ShearY", "TranslateX", "TranslateY", "Rotate", "Brightness",
-           "Color", "Contrast", "Sharpness", "Posterize", "Solarize", "AutoContrast", "Equalize")
+# torchvision's policy ops (index = the op's code in the passes below):
+# RandAugment and TrivialAugmentWide choose among the first 14, AutoAugment's
+# sub-policies name theirs
+_TV_OPS = ("Identity", "ShearX", "ShearY", "TranslateX", "TranslateY", "Rotate", "Brightness",
+           "Color", "Contrast", "Sharpness", "Posterize", "Solarize", "AutoContrast", "Equalize",
+           "Invert")
+
+# torchvision's AutoAugment sub-policies: two (op, probability, magnitude bin) each
+_AA_POLICIES: dict[str, list[tuple[tuple[str, float, int | None], ...]]] = {
+    "imagenet": [
+        (("Posterize", 0.4, 8), ("Rotate", 0.6, 9)), (("Solarize", 0.6, 5), ("AutoContrast", 0.6, None)),
+        (("Equalize", 0.8, None), ("Equalize", 0.6, None)), (("Posterize", 0.6, 7), ("Posterize", 0.6, 6)),
+        (("Equalize", 0.4, None), ("Solarize", 0.2, 4)), (("Equalize", 0.4, None), ("Rotate", 0.8, 8)),
+        (("Solarize", 0.6, 3), ("Equalize", 0.6, None)), (("Posterize", 0.8, 5), ("Equalize", 1.0, None)),
+        (("Rotate", 0.2, 3), ("Solarize", 0.6, 8)), (("Equalize", 0.6, None), ("Posterize", 0.4, 6)),
+        (("Rotate", 0.8, 8), ("Color", 0.4, 0)), (("Rotate", 0.4, 9), ("Equalize", 0.6, None)),
+        (("Equalize", 0.0, None), ("Equalize", 0.8, None)), (("Invert", 0.6, None), ("Equalize", 1.0, None)),
+        (("Color", 0.6, 4), ("Contrast", 1.0, 8)), (("Rotate", 0.8, 8), ("Color", 1.0, 2)),
+        (("Color", 0.8, 8), ("Solarize", 0.8, 7)), (("Sharpness", 0.4, 7), ("Invert", 0.6, None)),
+        (("ShearX", 0.6, 5), ("Equalize", 1.0, None)), (("Color", 0.4, 0), ("Equalize", 0.6, None)),
+        (("Equalize", 0.4, None), ("Solarize", 0.2, 4)), (("Solarize", 0.6, 5), ("AutoContrast", 0.6, None)),
+        (("Invert", 0.6, None), ("Equalize", 1.0, None)), (("Color", 0.6, 4), ("Contrast", 1.0, 8)),
+        (("Equalize", 0.8, None), ("Equalize", 0.6, None)),
+    ],
+    "cifar10": [
+        (("Invert", 0.1, None), ("Contrast", 0.2, 6)), (("Rotate", 0.7, 2), ("TranslateX", 0.3, 9)),
+        (("Sharpness", 0.8, 1), ("Sharpness", 0.9, 3)), (("ShearY", 0.5, 8), ("TranslateY", 0.7, 9)),
+        (("AutoContrast", 0.5, None), ("Equalize", 0.9, None)), (("ShearY", 0.2, 7), ("Posterize", 0.3, 7)),
+        (("Color", 0.4, 3), ("Brightness", 0.6, 7)), (("Sharpness", 0.3, 9), ("Brightness", 0.7, 9)),
+        (("Equalize", 0.6, None), ("Equalize", 0.5, None)), (("Contrast", 0.6, 7), ("Sharpness", 0.6, 5)),
+        (("Color", 0.7, 7), ("TranslateX", 0.5, 8)), (("Equalize", 0.3, None), ("AutoContrast", 0.4, None)),
+        (("TranslateY", 0.4, 3), ("Sharpness", 0.2, 6)), (("Brightness", 0.9, 6), ("Color", 0.2, 8)),
+        (("Solarize", 0.5, 2), ("Invert", 0.0, None)), (("Equalize", 0.2, None), ("AutoContrast", 0.6, None)),
+        (("Equalize", 0.2, None), ("Equalize", 0.6, None)), (("Color", 0.9, 9), ("Equalize", 0.6, None)),
+        (("AutoContrast", 0.8, None), ("Solarize", 0.2, 8)), (("Brightness", 0.1, 3), ("Color", 0.7, 0)),
+        (("Solarize", 0.4, 5), ("AutoContrast", 0.9, None)), (("TranslateY", 0.9, 9), ("TranslateY", 0.7, 9)),
+        (("AutoContrast", 0.9, None), ("Solarize", 0.8, 3)), (("Equalize", 0.8, None), ("Invert", 0.1, None)),
+        (("TranslateY", 0.7, 9), ("AutoContrast", 0.9, None)),
+    ],
+    "svhn": [
+        (("ShearX", 0.9, 4), ("Invert", 0.2, None)), (("ShearY", 0.9, 8), ("Invert", 0.7, None)),
+        (("Equalize", 0.6, None), ("Solarize", 0.6, 6)), (("Invert", 0.9, None), ("Equalize", 0.6, None)),
+        (("Equalize", 0.6, None), ("Rotate", 0.9, 3)), (("ShearX", 0.9, 4), ("AutoContrast", 0.8, None)),
+        (("ShearY", 0.9, 8), ("Invert", 0.4, None)), (("ShearY", 0.9, 5), ("Solarize", 0.2, 6)),
+        (("Invert", 0.9, None), ("AutoContrast", 0.8, None)), (("Equalize", 0.6, None), ("Rotate", 0.9, 3)),
+        (("ShearX", 0.9, 4), ("Solarize", 0.3, 3)), (("ShearY", 0.8, 8), ("Invert", 0.7, None)),
+        (("Equalize", 0.9, None), ("TranslateY", 0.6, 6)), (("Invert", 0.9, None), ("Equalize", 0.6, None)),
+        (("Contrast", 0.3, 3), ("Rotate", 0.8, 4)), (("Invert", 0.8, None), ("TranslateY", 0.0, 2)),
+        (("ShearY", 0.7, 6), ("Solarize", 0.4, 8)), (("Invert", 0.6, None), ("Rotate", 0.8, 4)),
+        (("ShearY", 0.3, 7), ("TranslateX", 0.9, 3)), (("ShearX", 0.1, 6), ("Invert", 0.6, None)),
+        (("Solarize", 0.7, 2), ("TranslateY", 0.6, 7)), (("ShearY", 0.8, 4), ("Invert", 0.8, None)),
+        (("ShearX", 0.7, 9), ("TranslateY", 0.8, 3)), (("ShearY", 0.8, 5), ("AutoContrast", 0.7, None)),
+        (("ShearX", 0.7, 2), ("Invert", 0.1, None)),
+    ],
+}
 
 
-class RandAugment(_Policy):
+def _is_int(v: Any) -> bool:
+    return isinstance(v, numbers.Integral) and not isinstance(v, bool)
+
+
+def _magnitude_bins(name: str, value: Any) -> int:
+    if not (_is_int(value) and value >= 2):
+        # torchvision's posterize table divides by num_magnitude_bins - 1
+        raise ValueError(f"{name}: num_magnitude_bins must be an int >= 2, got {value!r}")
+    return int(value)
+
+
+class _TorchvisionPolicy(_Policy):
+    """torchvision's policies (RandAugment, TrivialAugmentWide, AutoAugment):
+    each step draws an op code, a magnitude bin and a sign per image and runs
+    torchvision's op at that bin's magnitude. ``interpolation`` is
+    ``"nearest"`` or ``"bilinear"``; ``fill=None`` keeps torch's zero padding,
+    otherwise one or three values on the 0-1 scale."""
+
+    num_magnitude_bins: int
+    _wide = False           # TrivialAugmentWide's larger magnitude ranges
+
+    def _setup(self, interpolation: Any, fill: Any, same_on_batch: bool, steps: int) -> None:
+        name = type(self).__name__
+        self.interpolation = _warp_interpolation(interpolation, name)
+        self.fill = None if fill is None else _fill3(fill, name)
+        self.same_on_batch = bool(same_on_batch)
+        self._steps = [_TorchvisionPolicyOp(self, j) for j in range(steps)]
+
+    def _choose(self, j: int, k: int, b: Binding, rng: str) -> list[str]:
+        """Sampler lines that set `int op` (a _TV_OPS code), `int idx` (the
+        magnitude bin), `bool on` and `int pick` (the value kept for the
+        reference in slot k + 1) for step j, whose slots start at k."""
+        raise NotImplementedError
+
+
+class _TorchvisionPolicyOp(_PolicyOp):
+    """One step of a torchvision policy. Slots: the op code if applied (else
+    -1), the policy's pick (the magnitude bin; AutoAugment: the
+    sub-policy), the sign (+-1), the eight warp coefficients of
+    shaders/warp.slang, torchvision's signed magnitude."""
+
+    parent: _TorchvisionPolicy
+
+    def __init__(self, parent: _TorchvisionPolicy, j: int):
+        super().__init__(parent)
+        self.j = j
+
+    def _slot_count(self) -> int:
+        return 12
+
+    def _stat_layout(self) -> list[tuple[str, int]]:
+        return [("mean", 1), ("minmax", 6), ("lut", 768)]      # contrast, autocontrast, equalize
+
+    def _sample(self, b: Binding, rng: str) -> list[str]:
+        pol, k = self.parent, b.k(self)
+        n, wide = pol.num_magnitude_bins, pol._wide
+        shear, rotate, enhance = (0.99, 135.0, 0.99) if wide else (0.3, 30.0, 0.9)
+
+        def table(kind: str, values: Sequence[float]) -> str:
+            fmt = _dlit if kind == "double" else lit
+            return f"{kind} {{}}[{n}] = {{{{ {', '.join(fmt(v) for v in values)} }}}};"
+
+        def lin(start: float, end: float) -> list[float]:
+            return [_lin_f32(start, end, n, i) for i in range(n)]
+
+        # torch.round(8 - arange(n) / ((n - 1) / 4 or 6)) in float32
+        div = _f32((n - 1) / (6 if wide else 4))
+        bits = [float(round(_f32(8 - _f32(_f32(i) / div)))) for i in range(n)]
+        shears = lin(0.0, shear)
+        if wide:        # a fixed 32 pixels
+            translate = "tr[idx]"
+        else:           # 150 / 331 of the image's size, as a float32 end point
+            translate = (f"float(lin_f32(0.0l, double(float({_dlit(150.0 / 331.0)} * "
+                         f"double(op == 3 ? CW : CH))), {n}, idx))")
+        corner = "-0.5l * double(CW), -0.5l * double(CH)"      # center=[0, 0]
+        return [
+            "{",
+            *[f"    {ln}" for ln in pol._choose(self.j, k, b, rng)],
+            f"    float sg = rnd({rng}) <= 0.5 ? -1.0 : 1.0;",
+            "    double sd = double(sg);",
+            # torchvision's magnitude per bin (its float32 tables)
+            "    " + table("float", shears).format("sh"),
+            "    " + table("double", [math.degrees(math.atan(v)) for v in shears]).format("shd"),
+            "    " + table("float", lin(0.0, rotate)).format("rot"),
+            "    " + table("float", lin(0.0, enhance)).format("enh"),
+            "    " + table("float", bits).format("bits"),
+            "    " + table("float", lin(1.0, 0.0)).format("sol"),
+            *(["    " + table("float", lin(0.0, 32.0)).format("tr")] if wide else []),
+            "    float m = 0.0;",
+            "    if (op == 1 || op == 2) m = sh[idx];",
+            f"    if (op == 3 || op == 4) m = {translate};",
+            "    if (op == 5) m = rot[idx];",
+            "    if (op >= 6 && op <= 9) m = enh[idx];",
+            "    if (op == 10) m = bits[idx];",
+            "    if (op == 11) m = sol[idx];",
+            "    if (op >= 1 && op <= 9) m *= sg;",
+            "    double c[8]; for (int i = 0; i < 8; ++i) c[i] = 0.0l;",
+            f"    if (op == 1) affine_coeffs(CW, CH, 0.0l, 0.0l, 0.0l, 1.0l, sd * shd[idx], 0.0l, "
+            f"{corner}, c);",
+            f"    if (op == 2) affine_coeffs(CW, CH, 0.0l, 0.0l, 0.0l, 1.0l, 0.0l, sd * shd[idx], "
+            f"{corner}, c);",
+            # torchvision truncates the translation to whole pixels: int(magnitude)
+            "    if (op == 3 || op == 4) { double t = double(int(m));",
+            "        affine_coeffs(CW, CH, 0.0l, op == 3 ? t : 0.0l, op == 4 ? t : 0.0l, 1.0l, "
+            "0.0l, 0.0l, 0.0l, 0.0l, c); }",
+            # rotate passes -angle to the affine matrix
+            "    if (op == 5) affine_coeffs(CW, CH, -double(m), 0.0l, 0.0l, 1.0l, 0.0l, 0.0l, "
+            "0.0l, 0.0l, c);",
+            f"    p[uint2({k}, b)] = on ? float(op) : -1.0; p[uint2({k + 1}, b)] = float(pick);",
+            f"    p[uint2({k + 2}, b)] = sg; p[uint2({k + 11}, b)] = m;",
+            f"    for (int i = 0; i < 8; ++i) p[uint2({k + 3} + i, b)] = float(c[i]);",
+            "}"]
+
+    def _input(self, b: Binding) -> list[str]:
+        pol, k = self.parent, b.k(self)
+        return [f"int op = int({P(k)});",
+                "if (op == 9) {", "    MidImage img = { src, b, OW, OH, 1 };",
+                # adjust_sharpness(1 + m) blends with alpha = 1 - factor = -m
+                f"    return sharpen(img, x, y, -{P(k + 11)});", "}",
+                "if (op < 1 || op > 5) return load_mid(src, x, y, b);",
+                *_warp_lines(k + 3, pol.interpolation, pol.fill)]
+
+    def _post(self, b: Binding) -> list[str]:
+        k = b.k(self)
+        mean, minmax, lut = b.stats(self)
+        f = f"(1.0 + {P(k + 11)})"
+        mm = ", ".join(ST(minmax + i) for i in range(6))
+        return [f"{{ int op = int({P(k)});",
+                f"  if (op == 6) c = brightness(c, {f});",
+                f"  if (op == 7) c = saturation(c, {f});",
+                f"  if (op == 8) {{ {stop(mean)} c = contrast(c, {f}, {ST(mean)}); }}",
+                f"  if (op == 10) c = posterize(c, float(1 << clamp(int({P(k + 11)}), 0, 8)));",
+                f"  if (op == 11) c = solarize(c, {P(k + 11)});",
+                f"  if (op == 12) {{ {stop(minmax)} c = autocontrast(c, {mm}); }}",
+                f"  if (op == 13) {{ {stop(lut)} c = equalize(c, st, b, {lut}); }}",
+                "  if (op == 14) c = invert(c);",
+                "}"]
+
+
+class RandAugment(_TorchvisionPolicy):
     """torchvision RandAugment: ``num_ops`` times per image, one of 14 ops
     (identity, shear, translate, rotate, brightness, colour, contrast,
     sharpness, posterize, solarize, autocontrast, equalize) chosen uniformly,
@@ -844,27 +1035,18 @@ class RandAugment(_Policy):
 
     def __init__(self, num_ops: int = 2, magnitude: int = 9, num_magnitude_bins: int = 31,
                  interpolation: Any = "nearest", fill: Any = None, same_on_batch: bool = False):
-        def is_int(v: Any) -> bool:
-            return isinstance(v, numbers.Integral) and not isinstance(v, bool)
-
-        if not (is_int(num_ops) and num_ops >= 0):
+        if not (_is_int(num_ops) and num_ops >= 0):
             raise ValueError(f"RandAugment: num_ops must be a non-negative int, got {num_ops!r}")
-        if not (is_int(num_magnitude_bins) and num_magnitude_bins >= 2):
-            # torchvision's posterize table divides by num_magnitude_bins - 1
-            raise ValueError("RandAugment: num_magnitude_bins must be an int >= 2, got "
-                             f"{num_magnitude_bins!r}")
-        if not (is_int(magnitude) and 0 <= magnitude < num_magnitude_bins):
+        self.num_magnitude_bins = _magnitude_bins("RandAugment", num_magnitude_bins)
+        if not (_is_int(magnitude) and 0 <= magnitude < num_magnitude_bins):
             raise ValueError(f"RandAugment: magnitude must be an int in [0, num_magnitude_bins), "
                              f"got {magnitude!r}")
         self.num_ops, self.magnitude = int(num_ops), int(magnitude)
-        self.num_magnitude_bins = int(num_magnitude_bins)
-        self.interpolation = _warp_interpolation(interpolation, "RandAugment")
-        self.fill = None if fill is None else _fill3(fill, "RandAugment")
-        self.same_on_batch = bool(same_on_batch)
-        self._steps = [_RandAugmentOp(self) for _ in range(self.num_ops)]
+        self._setup(interpolation, fill, same_on_batch, self.num_ops)
 
-    def _value(self, start: float, end: float) -> float:
-        return _lin_f32(start, end, self.num_magnitude_bins, self.magnitude)
+    def _choose(self, j: int, k: int, b: Binding, rng: str) -> list[str]:
+        return [f"int op = irand({rng}, 14); int idx = {self.magnitude}; bool on = true; "
+                "int pick = idx;"]
 
     def __repr__(self) -> str:
         return (f"RandAugment(num_ops={self.num_ops}, magnitude={self.magnitude}, "
@@ -872,77 +1054,66 @@ class RandAugment(_Policy):
                 f"interpolation={self.interpolation!r}, fill={self.fill})")
 
 
-class _RandAugmentOp(_PolicyOp):
-    """One of RandAugment's ops. Slots: the op code, the sign (+-1), the
-    eight warp coefficients of shaders/warp.slang."""
+class TrivialAugmentWide(_TorchvisionPolicy):
+    """torchvision TrivialAugmentWide: one of RandAugment's 14 ops per image,
+    chosen uniformly, at a magnitude bin drawn uniformly from
+    ``num_magnitude_bins`` over its wider ranges (shear to 0.99, translate to
+    32 pixels, rotate to 135 degrees, enhance factors 0.01 to 1.99, posterize
+    to 2 bits), with a random sign where the op has one. One pass after the
+    resize and crops; ``interpolation`` and ``fill`` as in RandAugment."""
 
-    parent: RandAugment
+    _wide = True
 
-    def _slot_count(self) -> int:
-        return 10
+    def __init__(self, num_magnitude_bins: int = 31, interpolation: Any = "nearest",
+                 fill: Any = None, same_on_batch: bool = False):
+        self.num_magnitude_bins = _magnitude_bins("TrivialAugmentWide", num_magnitude_bins)
+        self._setup(interpolation, fill, same_on_batch, 1)
 
-    def _stat_layout(self) -> list[tuple[str, int]]:
-        return [("mean", 1), ("minmax", 6), ("lut", 768)]      # contrast, autocontrast, equalize
+    def _choose(self, j: int, k: int, b: Binding, rng: str) -> list[str]:
+        return [f"int op = irand({rng}, 14); int idx = irand({rng}, {self.num_magnitude_bins}); "
+                "bool on = true; int pick = idx;"]
 
-    def _sample(self, b: Binding, rng: str) -> list[str]:
-        ra, k = self.parent, b.k(self)
-        shear = _dlit(math.degrees(math.atan(ra._value(0.0, 0.3))))
-        rotate = _dlit(ra._value(0.0, 30.0))
-        corner = "-0.5l * double(CW), -0.5l * double(CH)"      # center=[0, 0]
-        return [
-            "{",
-            f"    int op = irand({rng}, {len(_RA_OPS)});",
-            f"    float sg = rnd({rng}) <= 0.5 ? -1.0 : 1.0;",
-            "    double sd = double(sg);",
-            "    double m[8]; for (int i = 0; i < 8; ++i) m[i] = 0.0l;",
-            f"    if (op == 1) affine_coeffs(CW, CH, 0.0l, 0.0l, 0.0l, 1.0l, sd * {shear}, 0.0l, "
-            f"{corner}, m);",
-            f"    if (op == 2) affine_coeffs(CW, CH, 0.0l, 0.0l, 0.0l, 1.0l, 0.0l, sd * {shear}, "
-            f"{corner}, m);",
-            "    if (op == 3 || op == 4) {",
-            "        int size = op == 3 ? CW : CH;",
-            f"        double end = double(float({_dlit(150.0 / 331.0)} * double(size)));",
-            # torchvision truncates the translation to whole pixels: int(magnitude)
-            f"        double t = sd * double(int(lin_f32(0.0l, end, {ra.num_magnitude_bins}, "
-            f"{ra.magnitude})));",
-            "        affine_coeffs(CW, CH, 0.0l, op == 3 ? t : 0.0l, op == 4 ? t : 0.0l, 1.0l, "
-            "0.0l, 0.0l, 0.0l, 0.0l, m);",
-            "    }",
-            # rotate passes -angle to the affine matrix
-            f"    if (op == 5) affine_coeffs(CW, CH, -sd * {rotate}, 0.0l, 0.0l, 1.0l, 0.0l, 0.0l, "
-            "0.0l, 0.0l, m);",
-            f"    p[uint2({k}, b)] = float(op); p[uint2({k + 1}, b)] = sg;",
-            f"    for (int i = 0; i < 8; ++i) p[uint2({k + 2} + i, b)] = float(m[i]);",
-            "}"]
+    def __repr__(self) -> str:
+        return (f"TrivialAugmentWide(num_magnitude_bins={self.num_magnitude_bins}, "
+                f"interpolation={self.interpolation!r}, fill={self.fill})")
 
-    def _input(self, b: Binding) -> list[str]:
-        ra, k = self.parent, b.k(self)
-        v = ra._value(0.0, 0.9)
-        sharp = (f"{P(k + 1)} > 0.0 ? {lit(1.0 - (1.0 + v))} : {lit(1.0 - (1.0 - v))}")
-        return [f"int op = int({P(k)});",
-                "if (op == 9) {", "    MidImage img = { src, b, OW, OH, 1 };",
-                f"    return sharpen(img, x, y, {sharp});", "}",
-                "if (op < 1 || op > 5) return load_mid(src, x, y, b);",
-                *_warp_lines(k + 2, ra.interpolation, ra.fill)]
 
-    def _post(self, b: Binding) -> list[str]:
-        ra, k = self.parent, b.k(self)
-        mean, minmax, lut = b.stats(self)
-        v = ra._value(0.0, 0.9)
-        f = f"({P(k + 1)} > 0.0 ? {lit(1.0 + v)} : {lit(1.0 - v)})"
-        x = 8 - _f32(_f32(ra.magnitude) / _f32((ra.num_magnitude_bins - 1) / 4))
-        bits = int(round(_f32(x)))         # torch.round: half to even, as Python's round
-        levels = lit(float(1 << max(0, min(8, bits))))
-        mm = ", ".join(ST(minmax + i) for i in range(6))
-        return [f"{{ int op = int({P(k)});",
-                f"  if (op == 6) c = brightness(c, {f});",
-                f"  if (op == 7) c = saturation(c, {f});",
-                f"  if (op == 8) {{ {stop(mean)} c = contrast(c, {f}, {ST(mean)}); }}",
-                f"  if (op == 10) c = posterize(c, {levels});",
-                f"  if (op == 11) c = solarize(c, {lit(ra._value(1.0, 0.0))});",
-                f"  if (op == 12) {{ {stop(minmax)} c = autocontrast(c, {mm}); }}",
-                f"  if (op == 13) {{ {stop(lut)} c = equalize(c, st, b, {lut}); }}",
-                "}"]
+class AutoAugment(_TorchvisionPolicy):
+    """torchvision AutoAugment: per image, one of the ``policy``'s 25
+    sub-policies (``"imagenet"``, ``"cifar10"`` or ``"svhn"``, or
+    torchvision's ``AutoAugmentPolicy``), chosen uniformly; each of its two
+    ops applies with its probability, at its magnitude bin of 10 and a random
+    sign where the op has one. Two passes after the resize and crops;
+    ``interpolation`` and ``fill`` as in RandAugment."""
+
+    num_magnitude_bins = 10
+
+    def __init__(self, policy: Any = "imagenet", interpolation: Any = "nearest",
+                 fill: Any = None, same_on_batch: bool = False):
+        name = str(getattr(policy, "value", policy)).lower()
+        if name not in _AA_POLICIES:
+            raise ValueError("AutoAugment: policy must be imagenet, cifar10 or svhn, "
+                             f"got {policy!r}")
+        self.policy = name
+        self._setup(interpolation, fill, same_on_batch, 2)
+
+    def _choose(self, j: int, k: int, b: Binding, rng: str) -> list[str]:
+        subs = _AA_POLICIES[self.policy]
+        ops = ", ".join(str(_TV_OPS.index(s[j][0])) for s in subs)
+        probs = ", ".join(lit(s[j][1]) for s in subs)
+        idxs = ", ".join(str(s[j][2] or 0) for s in subs)
+        # the second step reads the sub-policy the first one drew
+        pick = (f"irand({rng}, {len(subs)})" if j == 0
+                else f"int(p[uint2({b.k(self._steps[0]) + 1}, b)])")
+        return [f"int pick = {pick};",
+                f"int ops[{len(subs)}] = {{ {ops} }};",
+                f"float probs[{len(subs)}] = {{ {probs} }};",
+                f"int idxs[{len(subs)}] = {{ {idxs} }};",
+                f"int op = ops[pick]; int idx = idxs[pick]; bool on = rnd({rng}) <= probs[pick];"]
+
+    def __repr__(self) -> str:
+        return (f"AutoAugment(policy={self.policy!r}, interpolation={self.interpolation!r}, "
+                f"fill={self.fill})")
 
 
 # timm's RandAugment ops, in its order (index = the op's code below); with
