@@ -41,7 +41,7 @@ def test_labels_match_torchvision_and_timm():
     one_hot = torch.nn.functional.one_hot(labels, 5).float()
     assert torch.equal(mixed, one_hot.roll(1, 0).mul_(1 - lam).add_(one_hot.mul(lam)))
     # timm's mixup_target: smoothed one-hot, mixed with the mirrored batch
-    m = A.MixUpCutMix(num_classes=5, label_smoothing=0.1)
+    m = A.TimmMixup(num_classes=5, label_smoothing=0.1)
     got = m._mix_labels(labels, [3, 2, 1, 0], [lam] * 4)
     y1 = torch.full((4, 5), 0.1 / 5)
     y1.scatter_(1, labels.view(-1, 1), 1 - 0.1 + 0.1 / 5)
@@ -53,7 +53,7 @@ def test_labels_match_torchvision_and_timm():
 
 @pytest.mark.parametrize("mode", ["batch", "pair", "elem"])
 def test_timm_style_parameters_follow_its_rules(mode):
-    m = A.MixUpCutMix(mixup_alpha=0.8, cutmix_alpha=1.0, mode=mode, num_classes=10)
+    m = A.TimmMixup(mixup_alpha=0.8, cutmix_alpha=1.0, mode=mode, num_classes=10)
     torch.manual_seed(0)
     B, H, W = 64, 40, 60
     partner, own, boxes, lam = m._params(B, H, W)
@@ -74,9 +74,16 @@ def test_timm_style_parameters_follow_its_rules(mode):
         assert len(set(own)) > B // 4
 
 
+def test_timm_mixup_can_be_turned_off():
+    m = A.TimmMixup(mixup_alpha=0.8, cutmix_alpha=1.0, mode="elem", num_classes=10)
+    m.mixup_enabled = False
+    partner, own, boxes, lam = m._params(8, 32, 32)
+    assert own == lam == [1.0] * 8 and boxes == [(0, 0, 0, 0)] * 8
+
+
 def test_timm_style_draw_statistics():
-    m = A.MixUpCutMix(mixup_alpha=0.8, cutmix_alpha=1.0, switch_prob=0.3, prob=0.7,
-                      mode="elem", num_classes=10)
+    m = A.TimmMixup(mixup_alpha=0.8, cutmix_alpha=1.0, switch_prob=0.3, prob=0.7,
+                    mode="elem", num_classes=10)
     torch.manual_seed(0)
     lam, cut = m._draw(20000)
     lam_t, cut_t = torch.tensor(lam), torch.tensor(cut)
@@ -84,7 +91,10 @@ def test_timm_style_draw_statistics():
     assert abs(mixed.float().mean().item() - 0.7) < 0.02
     assert abs(cut_t.float().mean().item() - 0.3) < 0.02
     assert abs(lam_t[mixed].mean().item() - 0.5) < 0.02            # Beta(a, a) has mean 1/2
-    minmax = A.MixUpCutMix(cutmix_minmax=(0.2, 0.6), mixup_alpha=0.0, num_classes=10)
+    # ... and variance 1 / (4 (2a + 1)): tells mixup_alpha 0.8 from cutmix_alpha 1.0
+    assert abs(lam_t[mixed & ~cut_t].var().item() - 1 / 10.4) < 0.005
+    assert abs(lam_t[mixed & cut_t].var().item() - 1 / 12) < 0.005
+    minmax = A.TimmMixup(cutmix_minmax=(0.2, 0.6), mixup_alpha=0.0, num_classes=10)
     box, w = minmax._box(0.5, 100, 200)
     x1, y1, x2, y2 = box
     assert 20 <= y2 - y1 < 60 and 40 <= x2 - x1 < 120 and math.isclose(w, 1 - (y2 - y1) * (x2 - x1) / 20000)
@@ -93,11 +103,11 @@ def test_timm_style_draw_statistics():
 @pytest.mark.parametrize("make, match", [
     (lambda: A.MixUp(alpha=0), "alpha must be positive"),
     (lambda: A.CutMix(num_classes=0), "num_classes"),
-    (lambda: A.MixUpCutMix(mixup_alpha=0, cutmix_alpha=0), "set mixup_alpha"),
-    (lambda: A.MixUpCutMix(mode="row"), "mode"),
-    (lambda: A.MixUpCutMix(prob=1.5), "prob"),
-    (lambda: A.MixUpCutMix(cutmix_minmax=(0.5, 0.2)), "cutmix_minmax"),
-    (lambda: A.MixUpCutMix(label_smoothing=-0.1), "label_smoothing"),
+    (lambda: A.TimmMixup(mixup_alpha=0, cutmix_alpha=0), "set mixup_alpha"),
+    (lambda: A.TimmMixup(mode="row"), "mode"),
+    (lambda: A.TimmMixup(prob=1.5), "prob"),
+    (lambda: A.TimmMixup(cutmix_minmax=(0.5, 0.2)), "cutmix_minmax"),
+    (lambda: A.TimmMixup(label_smoothing=-0.1), "label_smoothing"),
 ])
 def test_argument_errors(make, match):
     with pytest.raises(ValueError, match=match):

@@ -211,7 +211,14 @@ Pipeline rules, checked when you build the `Compose`:
 (for models trained in bfloat16, at the same speed as float16) and
 `torch.float32` are the other choices. Passes between blurs, warps and the
 final output keep float16 (float32 for float32 output). The output is a
-contiguous `(B, 3, H, W)` tensor; for `channels_last`, call `.to(...)` on it.
+contiguous `(B, 3, H, W)` tensor (`(B, 1, H, W)` after
+`Grayscale(num_output_channels=1)`); for `channels_last`, call `.to(...)` on
+it.
+
+A `Compose` is fixed when it is built: changing one of its transforms
+afterwards is not supported. To change parameters during training (a
+magnitude schedule), build a new `Compose`; each new set of values compiles
+once, which takes a few seconds.
 
 ## Inputs and decoders
 
@@ -317,13 +324,16 @@ x, y = mix(train(images), labels)       # labels: (B,) class indices or (B, clas
   torchvision does, so under the same `torch.manual_seed` they give
   torchvision's result. torchvision recipes pick one per batch with
   `random.choice` or `v2.RandomChoice([cutmix, mixup])`.
-- `MixUpCutMix(mixup_alpha=1.0, cutmix_alpha=0.0, cutmix_minmax=None,
+- `TimmMixup(mixup_alpha=1.0, cutmix_alpha=0.0, cutmix_minmax=None,
   prob=1.0, switch_prob=0.5, mode="batch", correct_lam=True,
   label_smoothing=0.1, num_classes=1000)` is timm's `Mixup`, the DeiT,
   ConvNeXt and MAE recipe with `mixup_alpha=0.8, cutmix_alpha=1.0`. Image
   `i` mixes with `B - 1 - i`; `mode="pair"` and `"elem"` draw per mirrored
   pair and per image. timm draws with NumPy, so the random values differ
-  from timm's; the rules are the same.
+  from timm's; the rules are the same. The defaults are timm's too: label
+  smoothing 0.1 and no CutMix unless `cutmix_alpha` or `cutmix_minmax` is
+  set. `mix.mixup_enabled = False` turns mixing off, as timm's training
+  script does for its last epochs.
 
 One Slang kernel per call writes the mixed batch (float16, bfloat16 or
 float32, as given); the parameters come from torch's CPU generator, so there
@@ -374,7 +384,8 @@ from slangvision.sr import (DiffJPEG, USMSharp, random_add_gaussian_noise_pt,
   can round the other way and move its 8x8 block: about 1e-4 of values,
   0.5/255 at most at quality 95, measured). `differentiable=True`
   (BasicSR's default) gives the values of BasicSR's soft rounding; neither
-  has gradients, and an input that requires them raises. Four kernels (the
+  has gradients, and an input that requires them raises unless the call
+  is under `torch.no_grad()`. Four kernels (the
   DCTs separable, one thread per block row): 0.30 ms instead of 1.5 ms per
   batch of 12 at 400x400 with a quality per image, 1.0 ms instead of 8.2 ms
   at 48. BasicSR overwrites the caller's quality tensor with its factors

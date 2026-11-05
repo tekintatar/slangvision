@@ -448,9 +448,11 @@ def test_random_values_follow_torchvision(images):
     from torchvision.transforms import RandomResizedCrop
 
     crop, flip = A.RandomResizedCrop(8), A.RandomHorizontalFlip(p=0.3)
-    jitter = A.ColorJitter(0.4, 0.4, 0.4, 0.1)
-    pipe = A.Compose([crop, flip, jitter])
+    jitter = A.ColorJitter(0.4, (0.2, 1.8), 0.5, 0.1)
+    blur = A.GaussianBlur(5, sigma=(0.1, 2.0))
+    pipe = A.Compose([crop, flip, jitter, blur])
     img = images[0]                             # 300 x 400
+    torch.manual_seed(0)
     _, params = pipe._run([img] * 4096, "chw")
     b = pipe._b
     area = (params[:, b.geo + 2] * params[:, b.geo + 3] / (300 * 400)).mean().item()
@@ -461,9 +463,16 @@ def test_random_values_follow_torchvision(images):
     tv_aspect = sum(math.log(w / h) for _, _, h, w in boxes) / 4096
     assert abs(area - tv_area) < 0.02 and abs(aspect - tv_aspect) < 0.03
     assert abs(params[:, b.k(flip)].mean().item() - 0.3) < 0.03
+    # each factor uniform on torchvision's range: ends reached, mean within 5 sigma
     k = b.k(jitter)
-    assert abs(params[:, k].mean().item() - 1.0) < 0.02                 # brightness in [0.6, 1.4]
-    assert params[:, k + 3].abs().max().item() <= 0.1                  # hue in [-0.1, 0.1]
+    for i, (lo, hi) in enumerate([(0.6, 1.4), (0.2, 1.8), (0.5, 1.5), (-0.1, 0.1)]):
+        v = params[:, k + i]
+        span = hi - lo
+        assert lo <= v.min().item() < lo + 0.01 * span and hi - 0.01 * span < v.max().item() <= hi
+        assert abs(v.mean().item() - (lo + hi) / 2) < 5 * span / math.sqrt(12 * 4096)
+    s = params[:, b.k(blur)]
+    assert 0.1 <= s.min().item() < 0.12 and 1.98 < s.max().item() <= 2.0
+    assert abs(s.mean().item() - 1.05) < 5 * 1.9 / math.sqrt(12 * 4096)
     orders = Counter(params[:, k + 4].int().tolist())
     assert len(orders) == 24 and min(orders.values()) > 4096 / 24 * 0.7
 
@@ -551,7 +560,7 @@ def test_timm_style_mixing_follows_its_parameters(mode, batch):
     x = A.Compose([A.RandomResizedCrop(48), A.Normalize(MEAN, STD)],
                   dtype=torch.float32)(torch.cat([batch] * 4))
     labels = torch.arange(24, device="cuda") % 10
-    m = A.MixUpCutMix(mixup_alpha=0.8, cutmix_alpha=1.0, mode=mode, num_classes=10)
+    m = A.TimmMixup(mixup_alpha=0.8, cutmix_alpha=1.0, mode=mode, num_classes=10)
     torch.manual_seed(0)
     out, y = m(x, labels)
     torch.manual_seed(0)
@@ -1245,10 +1254,6 @@ def test_diff_jpeg_quality_arguments(batch):
         jpeg(x, q[:4])
     with pytest.raises(ValueError, match="float16, bfloat16 or float32"):
         jpeg(batch, 50)
-    with pytest.raises(NotImplementedError, match="no gradients"):
-        jpeg(x.clone().requires_grad_(), 50)
-    with torch.no_grad():
-        jpeg(x.clone().requires_grad_(), 50)
     assert jpeg(x[:0], 50).shape == (0, 3, 96, 128)
 
 
@@ -1346,3 +1351,23 @@ def test_photometric_draws_follow_torchvision():
     for i, (lo, hi) in enumerate([(0.875, 1.125), (0.5, 1.5), (0.5, 1.5), (-0.05, 0.05)]):
         v = params[:, k + i]
         assert lo <= v.min() and v.max() <= hi
+
+
+# ------------------------------------------------- inputs that require grad
+def test_stand_alone_kernels_take_tensors_that_require_grad():
+    """Under no_grad they run (SlangPy refuses tensors that require grad, so
+    they are detached); with grad enabled they say there are no gradients."""
+    x = torch.rand(2, 3, 64, 64, device="cuda").requires_grad_()
+    labels = torch.tensor([0, 1], device="cuda")
+    calls = {"USMSharp": lambda t: sr.USMSharp(radius=5)(t),
+             "add_gaussian_noise_pt": lambda t: sr.add_gaussian_noise_pt(t, 5),
+             "add_poisson_noise_pt": lambda t: sr.add_poisson_noise_pt(t, 1.0),
+             "DiffJPEG": lambda t: sr.DiffJPEG()(t, 50),
+             "MixUp": lambda t: A.MixUp(num_classes=2)(t, labels)[0],
+             "CutMix": lambda t: A.CutMix(num_classes=2)(t, labels)[0]}
+    for name, call in calls.items():
+        with torch.no_grad():
+            out = call(x)
+        assert out.shape == x.shape and not out.requires_grad, name
+        with pytest.raises(NotImplementedError, match="no gradients"):
+            call(x)

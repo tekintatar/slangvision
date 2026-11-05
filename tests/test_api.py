@@ -296,3 +296,17 @@ def test_custom_op_declaration_errors():
         A.Compose([lambda img: img])
     with pytest.raises(TypeError, match="slangvision transforms"):
         A.RandomApply([lambda img: img])
+
+
+def test_compose_is_fixed_when_built():
+    """Changing a transform after Compose() must not change the generated code
+    (it used to, on first use, out of step with the parameter slots)."""
+    class Gain(A.ColorOp):
+        params = {"g": A.Uniform(0.5, 1.5)}
+        slang = "float4 apply(float4 c, float g) { return clamp01(c * g); }"
+
+    op = Gain()
+    pipe = A.Compose([A.RandomResizedCrop(32), op, A.ColorJitter(0.4)])
+    before = pipe.source
+    op.params = {"g": A.Uniform(0.5, 1.5), "h": A.Uniform(0.0, 1.0)}
+    assert pipe._source("hwc") == before.replace("source_chw(ptrs", "source_hwc(ptrs")

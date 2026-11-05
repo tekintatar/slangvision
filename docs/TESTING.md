@@ -31,7 +31,7 @@ output and 4e-3 for float16 output, in normalized units.
 | RandomSolarize | reference off the threshold; values exactly on it may differ (checked to be on it) |
 | Normalize | reference (in every recipe) |
 | MixUp, CutMix | draws identical to torchvision's `make_params` under the same seeds (CPU); images (1e-6) and labels (exact) equal to torchvision's `v2.MixUp`/`v2.CutMix` on CUDA; float16 and bfloat16 outputs; input errors and empty batches |
-| MixUpCutMix | kernel output equals the mixing its parameters describe in batch, pair and elem modes; partners mirrored; CutMix label weight from the clipped box; timm's smoothed labels; switch/prob rates and Beta mean; `cutmix_minmax` box sizes |
+| TimmMixup | kernel output equals the mixing its parameters describe in batch, pair and elem modes; partners mirrored; CutMix label weight from the clipped box; timm's smoothed labels; switch/prob rates, Beta mean and variance (tells the two alphas apart); `mixup_enabled = False`; `cutmix_minmax` box sizes |
 | GaussianNoise | statistics on a flat image: mean and std of the added noise, a normal tail, channels uncorrelated, new per call; two noise ops independent (std adds in quadrature); clipping; the rest of a recipe replayed exactly at sigma 0; equalize after noise equals torchvision's equalize of the same noisy image (the pre-pass recomputes the same noise) |
 | sr: USMSharp | reference (BasicSR's USMSharp.forward in torch, with TF32 off; checked once to equal BasicSR's own module exactly): default size within 2.4e-7, 7 and 21 taps (mask switches at the threshold, under 3e-3 of values, at most 2e-3); float16 and bfloat16 outputs; OpenCV's kernel (formula and fixed small kernels, checked against OpenCV 5.0 for sizes 1-61); input errors |
 | sr: Gaussian noise | per-image sigma and gray flag equal BasicSR's draws under the same seed; a fractional gray weight blends (variance and channel correlation as BasicSR's formula); noise std per image within 3% of sigma; gray noise identical across channels and independent between images; colour channels uncorrelated; clip, rounds, dtypes, empty batch |
@@ -51,15 +51,25 @@ output and 4e-3 for float16 output, in normalized units.
 Also on CUDA: batch tensor, CHW list, HWC list and a non-contiguous HWC view
 give identical output; dtype, shape, empty input and input-error messages;
 `torch.manual_seed` repeats a run; `same_on_batch` gives identical values;
-sampled RandomResizedCrop areas and aspects, flip rates, ColorJitter ranges
-and all 24 op orders match torchvision's sampler statistically; SlangPy's
-SlangPy's Python torch bridge is allowed only for slangvision's own calls
+sampled RandomResizedCrop areas and aspects, flip rates and all 24
+ColorJitter op orders match torchvision's sampler statistically, and each
+ColorJitter factor and GaussianBlur sigma reaches both ends of its range
+with the range's mean; the sr ops and the mixers run on inputs that require
+grad under `torch.no_grad()` and raise with grad enabled; SlangPy's
+Python torch bridge is allowed only for slangvision's own calls
 (the process-wide flag is restored afterwards). With `slangpy-torch`
 installed the same test also compares the Python and compiled bridges'
 output; without it (the 2026-11-04 run below) both calls use the Python
 bridge.
 `tests/test_api.py` checks pipeline-structure rules, argument
-validation and custom-op declarations without a GPU or torch.
+validation, custom-op declarations and that a Compose is fixed when built,
+without a GPU or torch. `tests/test_parameters.py` (CPU torch and
+torchvision, run in CI) compares parsed arguments with independent sources,
+since the references reuse them: ColorJitter, RandomPhotometricDistort and
+GaussianBlur against what torchvision's own classes store, and
+`sr.gaussian_kernel` and USMSharp's taps against OpenCV 5.0.0's
+`getGaussianKernel` values. `tests/test_mixing_params.py` checks the
+MixUp/CutMix draws on the CPU.
 
 ## Validation records
 
@@ -123,7 +133,7 @@ validation of newer code.
   `CUDA_PATH`): 145 passed. Benchmark: header of
   `benchmarks/compare_pipelines.py`, raw data in
   `benchmarks/results/rtx_pro_4500_2026-11-04.json`.
-- 2026-11-05, RandomErasing and MixUp/CutMix/MixUpCutMix added, same host
+- 2026-11-05, RandomErasing and MixUp/CutMix/MixUpCutMix (now TimmMixup) added, same host
   and stack (box scripts' `CUDA_PATH`): 182 passed (the GPU-free mixing
   tests also run on CPU torch in CI).
 - 2026-11-05, RandomRotation/RandomAffine/RandomPerspective (the warp
@@ -170,3 +180,11 @@ validation of newer code.
   (commit 8d56e3a, loaded from source) and the timings (medians of 40 synced
   calls; Real-ESRGAN's degradation as before) came from ad-hoc scripts;
   numbers in docs/GUIDE.md (Super resolution).
+- 2026-11-05, review fixes on top of 91bc882 (sr ops and mixers detach
+  their input, Compose fixed when built, TimmMixup with `mixup_enabled`,
+  parsing checked against torchvision and OpenCV), same host (RTX PRO 4500
+  Blackwell, driver 580.126.16) and stack (SlangPy 0.42.0, torch
+  2.13.0+cu130, torchvision 0.28.0, timm 1.0.31): 374 passed; after the
+  review's cleanups 375 passed. The
+  requires-grad test was also run with the detach removed, and failed with
+  SlangPy's "In-place operations not supported for torch autograd".

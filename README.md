@@ -130,11 +130,11 @@ DataLoader), accuracy and limits.
 ```python
 import slangvision as A
 
-mix = A.MixUpCutMix(mixup_alpha=0.8, cutmix_alpha=1.0, label_smoothing=0.1, num_classes=1000)
+mix = A.TimmMixup(mixup_alpha=0.8, cutmix_alpha=1.0, label_smoothing=0.1, num_classes=1000)
 # x, y = mix(train(images), labels)       # after the pipeline, on its output batch
 ```
 
-`MixUp` and `CutMix` are torchvision's, draw for draw; `MixUpCutMix` is
+`MixUp` and `CutMix` are torchvision's, draw for draw; `TimmMixup` is
 timm's `Mixup`, with per-batch, per-pair or per-image mixing.
 
 ### Super resolution (Real-ESRGAN)

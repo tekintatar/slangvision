@@ -27,7 +27,7 @@ __version__ = "0.1.0"
 from . import _runtime  # noqa: F401
 from ._base import Choice, ColorOp, NeighbourhoodOp, Uniform
 from ._compile import Compose
-from .mixing import CutMix, MixUp, MixUpCutMix
+from .mixing import CutMix, MixUp, TimmMixup
 from .sr import USMSharp
 from .transforms import (
     AutoAugment,
@@ -76,7 +76,6 @@ __all__ = [
     "GaussianNoise",
     "Grayscale",
     "MixUp",
-    "MixUpCutMix",
     "NeighbourhoodOp",
     "Normalize",
     "Pad",
@@ -101,6 +100,7 @@ __all__ = [
     "RandomSolarize",
     "RandomVerticalFlip",
     "Resize",
+    "TimmMixup",
     "TimmRandAugment",
     "TrivialAugmentWide",
     "Uniform",

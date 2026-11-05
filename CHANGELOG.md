@@ -62,8 +62,9 @@
   Can be wrapped in `RandomApply` or `RandomChoice`. Not supported:
   `RandomRotation(expand=True)` and warps before a resize or crop.
 - `MixUp` and `CutMix` (torchvision's, draw for draw: the same seed gives
-  torchvision's result) and `MixUpCutMix` (timm's `Mixup`: switch
-  probability, label smoothing, batch/pair/elem modes, `cutmix_minmax`),
+  torchvision's result) and `TimmMixup` (timm's `Mixup`: switch
+  probability, label smoothing, batch/pair/elem modes, `cutmix_minmax`,
+  `mixup_enabled`),
   applied to Compose's output batch and labels by one fused Slang kernel.
 - `RandomErasing` (torchvision's, after `Normalize`; `value` a number, per
   channel, or `"random"` for per-pixel normal noise, which also covers timm's
@@ -85,6 +86,13 @@
   `.to(torch.bfloat16)`, at the same speed as float16. SlangPy's torch
   bridge does not take bfloat16 tensors yet, so the kernels write bfloat16
   bits through an int16 view of the output.
+
+### Changed
+- `Compose` is fixed when it is built: `transforms` is a tuple and the
+  generated Slang comes from the transforms as they were then. Changing a
+  transform afterwards could make two ops share a parameter slot (or, for
+  the last op, write into the next image's row); build a new `Compose` to
+  change parameters, e.g. for a magnitude schedule.
 
 ## 0.1.0 — 2026-11-04
 

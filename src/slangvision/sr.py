@@ -71,6 +71,9 @@ def _check_batch(x: Any, name: str) -> str:
     if dtype not in _CONVERT or not x.is_cuda:
         raise ValueError(f"{name}: images must be a float16, bfloat16 or float32 CUDA tensor, "
                          f"got {x.dtype} on {x.device}")
+    if x.requires_grad and torch.is_grad_enabled():
+        raise NotImplementedError(f"{name}: no gradients (the kernels have no backward pass); "
+                                  "run it under torch.no_grad() or on a detached tensor")
     return dtype
 
 
@@ -122,7 +125,7 @@ class USMSharp:
         if B and min(H, W) <= r:
             raise ValueError(f"USMSharp: images must be larger than {r} pixels on each side "
                              f"for reflect padding (radius {self.radius}), got {H}x{W}")
-        x = x.contiguous()
+        x = x.detach().contiguous()     # SlangPy refuses tensors that require grad
         out = torch.empty_like(x)
         if B == 0:
             return out
@@ -163,7 +166,7 @@ def _noise(kernel: str, x: "torch.Tensor", columns: list["torch.Tensor"], clip: 
     from . import _runtime
 
     dtype = _check_batch(x, name)
-    x = x.contiguous()
+    x = x.detach().contiguous()     # SlangPy refuses tensors that require grad
     out = torch.empty_like(x)
     if x.shape[0] == 0:
         return out
@@ -232,7 +235,7 @@ def add_poisson_noise_pt(img: "torch.Tensor", scale: Any = 1.0, clip: bool = Tru
     B = x.shape[0]
     if B == 0:
         return x.clone()
-    x = x.contiguous()
+    x = x.detach().contiguous()     # SlangPy refuses tensors that require grad
     color = torch.zeros(B, 256, dtype=torch.int32, device=x.device)
     gray = torch.zeros_like(color)
     view = _view(dtype)
@@ -364,13 +367,8 @@ class DiffJPEG:
         from . import _runtime
 
         dtype = _check_batch(x, "DiffJPEG")
-        if x.requires_grad and torch.is_grad_enabled():
-            raise NotImplementedError(
-                "DiffJPEG: no gradients here (BasicSR's differentiable=True backpropagates "
-                "through its soft rounding); run it under torch.no_grad() or on a detached "
-                "tensor, as Real-ESRGAN does")
         B, _, H, W = x.shape
-        x = x.contiguous()
+        x = x.detach().contiguous()     # SlangPy refuses tensors that require grad
         out = torch.empty_like(x)
         if B == 0:
             return out

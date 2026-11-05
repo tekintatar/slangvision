@@ -217,13 +217,17 @@ class Compose:
     """
 
     def __init__(self, transforms: Sequence[Transform], dtype: Any = None):
-        self.transforms = list(transforms)
+        # fixed at construction: the parameter layout and the generated Slang
+        # come from the transforms as they are now, so build a new Compose to
+        # change one
+        self.transforms = tuple(transforms)
         self._dtype = _dtype_name(dtype)
         for t in _walk(self.transforms):
             if isinstance(t, _UserOp):
                 t._validate()
         self._plan()
-        self._sources: dict[str, str] = {}
+        template = self._generate()
+        self._sources = {lay: template.replace("@LAYOUT@", lay) for lay in ("chw", "hwc")}
 
     # ------------------------------------------------------------ structure
     def _plan(self) -> None:
@@ -331,8 +335,10 @@ class Compose:
 
     # -------------------------------------------------------------- codegen
     def _source(self, layout: str) -> str:
-        if layout in self._sources:
-            return self._sources[layout]
+        return self._sources[layout]
+
+    def _generate(self) -> str:
+        """The pipeline's Slang, with @LAYOUT@ where the input layout goes."""
         from ._runtime import library_source
 
         b = self._b
@@ -433,7 +439,7 @@ class Compose:
         for s in range(len(self._stages)):
             if s == 0:
                 args = "Tensor<int64_t, 1> ptrs, Tensor<int, 2> meta"
-                inp = f"input_0(source_{layout}(ptrs, meta, b), p, b, x, y, OW, OH)"
+                inp = "input_0(source_@LAYOUT@(ptrs, meta, b), p, b, x, y, OW, OH)"
             else:
                 args = "Tensor<Mid, 4> src"
                 inp = f"input_{s}(src, p, b, x, y, OW, OH)"
@@ -454,8 +460,7 @@ class Compose:
             for kind, k, stat_stage in b.stat_groups:
                 if stat_stage == s:
                     src += _stats_kernel(kind, k, s, args, inp)
-        self._sources[layout] = "\n".join(src)
-        return self._sources[layout]
+        return "\n".join(src)
 
     def _flip_lines(self, stage: int) -> list[str]:
         """The flips that pass `stage`'s input applies to its coordinates."""

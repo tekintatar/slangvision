@@ -7,7 +7,7 @@
 # mixed batch, with parameters drawn by torch's CPU generator (no GPU sync;
 # torch.manual_seed repeats them). MixUp and CutMix follow
 # torchvision.transforms.v2 draw for draw, so with the same seed they give
-# torchvision's results; MixUpCutMix follows timm's Mixup.
+# torchvision's results; TimmMixup follows timm's Mixup.
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import torch
 
-__all__ = ["CutMix", "MixUp", "MixUpCutMix"]
+__all__ = ["CutMix", "MixUp", "TimmMixup"]
 
 _KERNEL = Path(__file__).resolve().parent / "shaders" / "kernels" / "mix.slang"
 _CONVERT = {
@@ -72,6 +72,10 @@ class _Mixer:
             raise ValueError("images must be a float16, bfloat16 or float32 CUDA tensor, got "
                              f"{images.dtype} on {images.device}")
         B, _, H, W = images.shape
+        if images.requires_grad and torch.is_grad_enabled():
+            raise NotImplementedError(f"{type(self).__name__}: no gradients (the kernel has no "
+                                      "backward pass); run it under torch.no_grad() or on a "
+                                      "detached tensor")
         if not isinstance(labels, torch.Tensor) or labels.ndim not in (1, 2) or len(labels) != B:
             raise ValueError(f"labels must be a (B,) tensor of class indices or (B, classes) "
                              f"probabilities for B={B}, got "
@@ -98,7 +102,7 @@ class _Mixer:
                 for j, a, box in zip(partner, own, boxes)]
         # the partner weight is 1 - a in double precision, as torch computes it
         prm = torch.tensor(rows, dtype=torch.float32).pin_memory().to(x.device, non_blocking=True)
-        x = x.contiguous()
+        x = x.detach().contiguous()     # SlangPy refuses tensors that require grad
         out = torch.empty_like(x)
         name = str(x.dtype).replace("torch.", "")
         src = f"import slangpy;\n{_CONVERT[name]}\n{_KERNEL.read_text()}"
@@ -180,7 +184,7 @@ class CutMix(_TorchvisionMix):
 
 
 # ----------------------------------------------------------------- timm
-class MixUpCutMix(_Mixer):
+class TimmMixup(_Mixer):
     """timm's Mixup: MixUp and/or CutMix with label smoothing, the recipe of
     DeiT, ConvNeXt and MAE (``mixup_alpha=0.8, cutmix_alpha=1.0``). Each image
     mixes with its mirror in the batch (image ``i`` with ``B - 1 - i``).
@@ -193,6 +197,9 @@ class MixUpCutMix(_Mixer):
     label weight from the box's clipped area. Labels are smoothed like timm's
     ``mixup_target``. Draws use torch's CPU generator, not timm's NumPy one,
     so the random values differ from timm's while following the same rules.
+    As in timm, ``mixup_enabled = False`` turns mixing off (timm's train.py
+    does so for the last epochs) and the defaults are timm's: label smoothing
+    0.1 and no CutMix unless ``cutmix_alpha`` or ``cutmix_minmax`` is set.
     """
 
     def __init__(self, mixup_alpha: float = 1.0, cutmix_alpha: float = 0.0,
@@ -221,10 +228,14 @@ class MixUpCutMix(_Mixer):
         self.correct_lam = bool(correct_lam)
         self.label_smoothing = _unit(label_smoothing, "label_smoothing")
         self.num_classes = _positive_int(num_classes, "num_classes")
+        self.mixup_enabled = True
 
     def _draw(self, n: int) -> tuple[list[float], list[bool]]:
         """Per draw: the weight (1 = no mixing) and whether it is CutMix."""
         import torch
+
+        if not self.mixup_enabled:
+            return [1.0] * n, [False] * n
 
         def beta(alpha: float) -> "torch.Tensor":
             return torch.distributions.Beta(torch.tensor(alpha), torch.tensor(alpha)).sample((n,))
@@ -280,7 +291,7 @@ class MixUpCutMix(_Mixer):
         return partner, own, boxes, label
 
     def __repr__(self) -> str:
-        return (f"MixUpCutMix(mixup_alpha={self.mixup_alpha}, cutmix_alpha={self.cutmix_alpha}, "
+        return (f"TimmMixup(mixup_alpha={self.mixup_alpha}, cutmix_alpha={self.cutmix_alpha}, "
                 f"cutmix_minmax={self.cutmix_minmax}, prob={self.prob}, "
                 f"switch_prob={self.switch_prob}, mode={self.mode!r}, "
                 f"label_smoothing={self.label_smoothing}, num_classes={self.num_classes})")
