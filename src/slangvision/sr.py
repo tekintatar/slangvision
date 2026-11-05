@@ -5,6 +5,7 @@
 # the same results apart from the noise values themselves; swap the import:
 #
 #     from slangvision.sr import USMSharp       # was basicsr.utils.img_process_util
+#     from slangvision.sr import DiffJPEG       # was basicsr.utils.diffjpeg
 #
 # Each has its own Slang kernels (shaders/kernels/); slangvision.testing has
 # the references.
@@ -21,7 +22,7 @@ from .mixing import _CONVERT
 if TYPE_CHECKING:
     import torch
 
-__all__ = ["USMSharp", "add_gaussian_noise_pt", "add_poisson_noise_pt",
+__all__ = ["DiffJPEG", "USMSharp", "add_gaussian_noise_pt", "add_poisson_noise_pt",
            "random_add_gaussian_noise_pt", "random_add_poisson_noise_pt"]
 
 _KERNELS = Path(__file__).resolve().parent / "shaders" / "kernels"
@@ -261,3 +262,137 @@ def random_add_poisson_noise_pt(img: "torch.Tensor", scale_range: Any = (0, 1.0)
                                                                  scale_range[0]) + scale_range[0]
     gray = (torch.rand(b, dtype=img.dtype, device=img.device) < gray_prob).float()
     return add_poisson_noise_pt(img, scale, clip, rounds, gray)
+
+
+# ------------------------------------------------------------------ JPEG
+# ITU T.81 Annex K tables K.1 (luminance) and K.2 (chrominance), rows the
+# vertical frequency, as libjpeg stores them. BasicSR's DiffJPEG uses them
+# transposed (its DCT puts the vertical frequency first too).
+_Y_TABLE = [16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55,
+            14, 13, 16, 24, 40, 57, 69, 56, 14, 17, 22, 29, 51, 87, 80, 62,
+            18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81, 104, 113, 92,
+            49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98, 112, 100, 103, 99]
+_C_TABLE = [(([17, 18, 24, 47], [18, 21, 26, 66], [24, 26, 56, 99], [47, 66, 99, 99])[r][c]
+             if r < 4 and c < 4 else 99) for r in range(8) for c in range(8)]
+_JPEG_CONSTS: dict[Any, tuple["torch.Tensor", ...]] = {}
+
+
+def _jpeg_consts(device: Any, libjpeg: bool) -> tuple["torch.Tensor", ...]:
+    """The cosines and BasicSR's alpha(u) alpha(v) (float64 products rounded
+    to float32, as it builds them), and the base Y then C tables, transposed
+    as BasicSR has them unless ``libjpeg``; on ``device``."""
+    key = (str(device), bool(libjpeg))
+    consts = _JPEG_CONSTS.get(key)
+    if consts is None:
+        import numpy as np
+        import torch
+
+        n = np.arange(8)
+        cos = np.cos((2 * n[:, None] + 1) * n[None, :] * np.pi / 16)          # [x, u]
+        alpha = np.array([1.0 / np.sqrt(2)] + [1.0] * 7)
+        y, c = np.array(_Y_TABLE).reshape(8, 8), np.array(_C_TABLE).reshape(8, 8)
+        if not libjpeg:
+            y, c = y.T, c.T
+        consts = _JPEG_CONSTS[key] = tuple(
+            torch.tensor(np.asarray(a, dtype=np.float32).reshape(-1), device=device)
+            for a in (cos, np.outer(alpha, alpha), np.concatenate([y.reshape(-1), c.reshape(-1)])))
+    return consts
+
+
+class DiffJPEG:
+    """BasicSR's DiffJPEG, which Real-ESRGAN uses as its JPEG degradation:
+    ``jpeger = DiffJPEG(differentiable=False).cuda(); out = jpeger(out,
+    quality=q)`` with ``q`` a number or one per image (BasicSR's quality,
+    above 0 and below 100, may be fractional). The same steps as BasicSR, in
+    four passes (the DCTs separable, one thread per block row): RGB to YCbCr
+    (JFIF), Cb and Cr averaged over 2x2 pixels, 8x8 DCTs quantized with the
+    standard tables scaled by quality, then back, with chroma repeated over
+    2x2 pixels; sizes not a multiple of 16 are padded with black and cropped
+    back.
+
+    ``differentiable=True`` (BasicSR's default) gives the values of BasicSR's
+    soft rounding, ``round(t) + (t - round(t))**3``, but no gradients: it
+    raises NotImplementedError when ``x`` requires them. ``libjpeg=True`` is
+    closer to a real encoder and decoder and no longer BasicSR's result (the
+    differences: docs/GUIDE.md, Super resolution); it always rounds plainly.
+
+    Takes a (B, 3, H, W) float16, bfloat16 or float32 CUDA tensor in [0, 1]
+    (BasicSR takes float32 only) and returns the batch in the same dtype.
+    The caller's quality tensor is left as it is (BasicSR overwrites it with
+    its quality factors). ``.cuda()`` and ``.to()`` return the object
+    itself."""
+
+    def __init__(self, differentiable: bool = True, libjpeg: bool = False):
+        self.differentiable: bool = bool(differentiable)
+        self.libjpeg: bool = bool(libjpeg)
+
+    def cuda(self, *args: Any, **kwargs: Any) -> "DiffJPEG":
+        return self
+
+    def to(self, *args: Any, **kwargs: Any) -> "DiffJPEG":
+        return self
+
+    def _quality(self, quality: Any, x: "torch.Tensor") -> tuple["torch.Tensor | None", float]:
+        """A (B,) float32 quality tensor for the kernel to scale per image
+        (left unchanged, no host sync), or the table scale for all: BasicSR's
+        quality factor (in double, as BasicSR computes it for a number) or
+        libjpeg's scale for the quality rounded to 1-100. The kernel turns
+        per-image qualities into tables: in torch that takes about seven
+        launches (+0.085 ms per call at batch 12)."""
+        import torch
+
+        b = x.shape[0]
+        if isinstance(quality, torch.Tensor):
+            q = quality.detach().to(device=x.device, dtype=torch.float32).reshape(-1)
+            if q.numel() not in (1, b):
+                raise ValueError(f"DiffJPEG: quality must be a number or one per image ({b}), "
+                                 f"got shape {tuple(quality.shape)}")
+            return q.expand(b).contiguous(), 0.0
+        value = float(quality)
+        if self.libjpeg and math.isfinite(value):
+            qi = min(max(round(value), 1), 100)
+            return None, float(5000 // qi if qi < 50 else 200 - 2 * qi)
+        if 0 < value < 100:
+            return None, (5000.0 / value if value < 50 else 200.0 - value * 2) / 100.0
+        raise ValueError(f"DiffJPEG: quality must be above 0 and below 100, got {quality} "
+                         "(BasicSR's tables are zero at 100; libjpeg=True takes 1-100)")
+
+    def __call__(self, x: "torch.Tensor", quality: Any) -> "torch.Tensor":
+        import slangpy as spy
+        import torch
+
+        from . import _runtime
+
+        dtype = _check_batch(x, "DiffJPEG")
+        if x.requires_grad and torch.is_grad_enabled():
+            raise NotImplementedError(
+                "DiffJPEG: no gradients here (BasicSR's differentiable=True backpropagates "
+                "through its soft rounding); run it under torch.no_grad() or on a detached "
+                "tensor, as Real-ESRGAN does")
+        B, _, H, W = x.shape
+        x = x.contiguous()
+        out = torch.empty_like(x)
+        if B == 0:
+            return out
+        qual, value = self._quality(quality, x)
+        cos, alpha, tab = _jpeg_consts(x.device, self.libjpeg)
+        hp, wp = -(-H // 16) * 16, -(-W // 16) * 16
+        # luma, then Cb and Cr side by side below it: every block on the grid of 8
+        p = torch.empty(B, hp * 3 // 2, wp, dtype=torch.float32, device=x.device)
+        q = torch.empty_like(p)
+        blocks = spy.grid((B, hp * 3 // 2, wp // 8))      # one thread per block row
+        view = _view(dtype)
+        with _runtime.torch_bridge():
+            m = _module(dtype, "jpeg.slang")
+            m.jpeg_ycc(spy.grid((B, hp // 2, wp // 2)), view(x), p, H, W, hp, wp,
+                       int(self.libjpeg))
+            m.jpeg_quant(blocks, p, cos, alpha, tab, tab if qual is None else qual, q, hp,
+                         int(qual is not None), value, int(self.libjpeg),
+                         int(self.differentiable and not self.libjpeg))
+            m.jpeg_idct(blocks, q, cos, alpha, p)
+            m.jpeg_out(spy.grid((B, H, W)), p, view(out), hp, wp, (H + 1) // 2, (W + 1) // 2,
+                       int(self.libjpeg))
+        return out
+
+    def __repr__(self) -> str:
+        return f"DiffJPEG(differentiable={self.differentiable}, libjpeg={self.libjpeg})"

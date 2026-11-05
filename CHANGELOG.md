@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Added
+- `slangvision.sr.DiffJPEG`: BasicSR's DiffJPEG (Real-ESRGAN's JPEG
+  degradation), the same values up to float rounding, per-image quality:
+  0.30 ms instead of 1.5 ms per batch of 12 at 400x400 (RTX PRO 4500), 1.0
+  instead of 8.2 ms at 48. No gradients (`differentiable=True` gives the
+  values of BasicSR's soft rounding). The caller's quality tensor is left
+  unchanged. `libjpeg=True` follows a real encoder where BasicSR's does
+  not (its tables transposed and its black padding, both mistakes; float
+  tables and repeated chroma): 45.7 instead of 37.3 dB PSNR against
+  Pillow's JPEG at quality 50.
 - `slangvision.sr`: drop-in replacements for BasicSR's GPU degradation
   functions, which Real-ESRGAN calls in its training step: `USMSharp` (the
   same 51-tap Gaussian as a row and a column pass: 1.5 ms instead of 118 ms

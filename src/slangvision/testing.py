@@ -319,3 +319,84 @@ def poisson_noise_reference(img: "torch.Tensor", scale: Any = 1.0,
     noise = torch.poisson(q * vals) / vals - q
     noise = noise * (1 - g) + noise_gray * g
     return noise * torch.as_tensor(scale, dtype=img.dtype, device=img.device).expand(b).view(b, 1, 1, 1)
+
+
+def diff_jpeg_reference(x: "torch.Tensor", quality: Any,
+                        differentiable: bool = False) -> "torch.Tensor":
+    """BasicSR's DiffJPEG.forward (basicsr/utils/diffjpeg.py, Apache-2.0,
+    from mlomnitz/DiffJPEG, MIT) with its operations in its order, in
+    float32: transposed float tables scaled by the quality factor, black
+    padding to a multiple of 16, chroma averaged over 2x2 and repeated back.
+    ``quality`` a number or a (B,) tensor (not modified, unlike BasicSR's)."""
+    import itertools
+
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
+
+    dev = x.device
+    y_table = torch.tensor(np.array(
+        [[16, 11, 10, 16, 24, 40, 51, 61], [12, 12, 14, 19, 26, 58, 60, 55],
+         [14, 13, 16, 24, 40, 57, 69, 56], [14, 17, 22, 29, 51, 87, 80, 62],
+         [18, 22, 37, 56, 68, 109, 103, 77], [24, 35, 55, 64, 81, 104, 113, 92],
+         [49, 64, 78, 87, 103, 121, 120, 101], [72, 92, 95, 98, 112, 100, 103, 99]],
+        dtype=np.float32).T, device=dev)
+    c = np.full((8, 8), 99, dtype=np.float32)
+    c[:4, :4] = np.array([[17, 18, 24, 47], [18, 21, 26, 66], [24, 26, 56, 99],
+                          [47, 66, 99, 99]]).T
+    c_table = torch.tensor(c, device=dev)
+    fwd = np.zeros((8, 8, 8, 8), dtype=np.float32)
+    inv = np.zeros((8, 8, 8, 8), dtype=np.float32)
+    for a, b, u, v in itertools.product(range(8), repeat=4):
+        fwd[a, b, u, v] = np.cos((2 * a + 1) * u * np.pi / 16) * np.cos((2 * b + 1) * v * np.pi / 16)
+        inv[a, b, u, v] = np.cos((2 * u + 1) * a * np.pi / 16) * np.cos((2 * v + 1) * b * np.pi / 16)
+    alpha = np.array([1. / np.sqrt(2)] + [1] * 7)
+    fwd_t, inv_t = torch.from_numpy(fwd).to(dev), torch.from_numpy(inv).to(dev)
+    scale = torch.from_numpy(np.outer(alpha, alpha) * 0.25).float().to(dev)
+    alpha_t = torch.from_numpy(np.outer(alpha, alpha)).float().to(dev)
+    to_ycc = torch.from_numpy(np.array([[0.299, 0.587, 0.114], [-0.168736, -0.331264, 0.5],
+                                        [0.5, -0.418688, -0.081312]], dtype=np.float32).T).to(dev)
+    to_rgb = torch.from_numpy(np.array([[1., 0., 1.402], [1, -0.344136, -0.714136], [1, 1.772, 0]],
+                                       dtype=np.float32).T).to(dev)
+
+    def rounding(t: "torch.Tensor") -> "torch.Tensor":
+        return torch.round(t) + (t - torch.round(t)) ** 3 if differentiable else torch.round(t)
+
+    if isinstance(quality, torch.Tensor):
+        q = quality.to(dev, torch.float32).reshape(-1).expand(x.shape[0])
+        factor = (torch.where(q < 50, 5000. / q, 200. - q * 2) / 100.).view(-1, 1, 1, 1)
+    else:
+        factor = (5000. / quality if quality < 50 else 200. - quality * 2) / 100.
+
+    def blocks(p: "torch.Tensor") -> "torch.Tensor":
+        b, h, _ = p.shape
+        return p.view(b, h // 8, 8, -1, 8).permute(0, 1, 3, 2, 4).contiguous().view(b, -1, 8, 8)
+
+    def merge(p: "torch.Tensor", h: int, w: int) -> "torch.Tensor":
+        b = p.shape[0]
+        return p.view(b, h // 8, w // 8, 8, 8).permute(0, 1, 3, 2, 4).contiguous().view(b, h, w)
+
+    allow = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = False
+    try:
+        h, w = x.shape[-2:]
+        img = F.pad(x.float(), (0, -w % 16, 0, -h % 16), mode="constant", value=0)
+        hp, wp = img.shape[-2:]
+        ycc = torch.tensordot((img * 255).permute(0, 2, 3, 1), to_ycc, dims=1) + \
+            torch.tensor([0., 128., 128.], device=dev)
+        ch = ycc.permute(0, 3, 1, 2)
+        planes = {"y": (ycc[..., 0], y_table, hp, wp),
+                  "cb": (F.avg_pool2d(ch[:, 1:2], 2)[:, 0], c_table, hp // 2, wp // 2),
+                  "cr": (F.avg_pool2d(ch[:, 2:3], 2)[:, 0], c_table, hp // 2, wp // 2)}
+        out = {}
+        for k, (p, table, ph, pw) in planes.items():
+            coef = scale * torch.tensordot(blocks(p) - 128, fwd_t, dims=2)
+            coef = rounding(coef / (table * factor)) * (table * factor)
+            out[k] = merge(0.25 * torch.tensordot(coef * alpha_t, inv_t, dims=2) + 128, ph, pw)
+        up = [out[k].repeat_interleave(2, 1).repeat_interleave(2, 2) for k in ("cb", "cr")]
+        ycc = torch.stack([out["y"], up[0], up[1]], 3)
+        rgb = torch.tensordot(ycc + torch.tensor([0, -128., -128.], device=dev), to_rgb, dims=1)
+        rgb = torch.clamp(rgb, 0, 255).permute(0, 3, 1, 2) / 255
+        return rgb[:, :, :h, :w]
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = allow

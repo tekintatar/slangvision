@@ -21,8 +21,9 @@ import slangpy as spy  # noqa: E402
 
 import slangvision as A  # noqa: E402
 from slangvision import sr  # noqa: E402
-from slangvision.testing import (_replay, max_reference_error,  # noqa: E402
-                                 poisson_noise_reference, usm_sharp_reference)
+from slangvision.testing import (_replay, diff_jpeg_reference,  # noqa: E402
+                                 max_reference_error, poisson_noise_reference,
+                                 usm_sharp_reference)
 
 MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 TOL32 = 1e-4        # fp32 output vs torchvision (normalized units)
@@ -1198,3 +1199,88 @@ def test_fractional_gray_noise_blends_like_basicsr():
 def test_usm_sharp_takes_basicsr_radii():
     np = pytest.importorskip("numpy")
     assert A.USMSharp(np.int64(50)).size == 51 and A.USMSharp(0).size == 1
+
+
+def _jpeg_close(out, ref, mean=1e-6, frac=2e-3, big=1e-5):
+    """Same up to float rounding: the DCT sums in another order, so a
+    coefficient within rounding of a quantization step's half can round the
+    other way, which moves its 8x8 block by up to about the step / 4."""
+    d = (out.float() - ref).abs()
+    assert d.mean().item() < mean, d.mean().item()
+    assert (d > big).float().mean().item() < frac, (d > big).float().mean().item()
+    assert d.max().item() < 0.2, d.max().item()
+
+
+@pytest.mark.parametrize("differentiable", [False, True])
+def test_diff_jpeg_matches_basicsr(differentiable, batch):
+    x = batch.float() / 255.0
+    jpeg = sr.DiffJPEG(differentiable=differentiable)
+    torch.manual_seed(0)
+    for img in (x, x[:, :, :90, :123], x[:1], x[:1, :, :33, :50]):    # 16-multiples or not, batch 1
+        img = img.contiguous()
+        q = torch.empty(img.shape[0], device="cuda").uniform_(30, 95)
+        for quality in (30, 95, q):
+            _jpeg_close(jpeg(img, quality), diff_jpeg_reference(img, quality, differentiable))
+    for dtype in (torch.float16, torch.bfloat16):
+        out = jpeg(x.to(dtype), q)
+        assert out.dtype == dtype
+        _jpeg_close(out, diff_jpeg_reference(x.to(dtype), q, differentiable), mean=2e-3, big=1e-2)
+    assert jpeg.cuda() is jpeg and jpeg.to("cuda") is jpeg
+
+
+def test_diff_jpeg_quality_arguments(batch):
+    x = batch.float() / 255.0
+    jpeg = sr.DiffJPEG(differentiable=False)
+    q = torch.tensor([30.0, 41.5, 50.0, 62.25, 80.0, 95.0], device="cuda")
+    keep = q.clone()
+    out = jpeg(x, q)
+    assert torch.equal(q, keep)                       # BasicSR overwrites it with its factors
+    _jpeg_close(out, diff_jpeg_reference(x, keep))
+    for same in (torch.tensor(50.0, device="cuda"), torch.tensor([50], device="cuda"),
+                 torch.full((6,), 50, dtype=torch.int64, device="cuda")):
+        _jpeg_close(jpeg(x, same), jpeg(x, 50))       # int tensors: BasicSR truncates the factors
+    with pytest.raises(ValueError, match="below 100"):
+        jpeg(x, 100)
+    with pytest.raises(ValueError, match="one per image"):
+        jpeg(x, q[:4])
+    with pytest.raises(ValueError, match="float16, bfloat16 or float32"):
+        jpeg(batch, 50)
+    with pytest.raises(NotImplementedError, match="no gradients"):
+        jpeg(x.clone().requires_grad_(), 50)
+    with torch.no_grad():
+        jpeg(x.clone().requires_grad_(), 50)
+    assert jpeg(x[:0], 50).shape == (0, 3, 96, 128)
+
+
+def test_diff_jpeg_libjpeg_is_closer_to_pillow(batch):
+    pil = pytest.importorskip("PIL.Image")
+    import io
+
+    import numpy as np
+
+    def psnr(a, b):
+        return 10 * math.log10(1.0 / ((a - b) ** 2).mean().item())
+
+    for img in (batch, batch[:, :, :90, :123]):
+        x = (img.float() / 255.0).contiguous()
+        for q in (30, 50, 75, 95, 100):
+            ref = []
+            for a in img.permute(0, 2, 3, 1).cpu().numpy():
+                buf = io.BytesIO()
+                pil.fromarray(np.ascontiguousarray(a)).save(buf, "JPEG", quality=q, subsampling=2)
+                ref.append(torch.from_numpy(np.array(pil.open(buf).convert("RGB"))))
+            ref = torch.stack(ref).permute(0, 3, 1, 2).cuda().float() / 255.0
+            # measured: 41.5-44 dB (49.7 at 100) against 30-34 for BasicSR's
+            near = psnr(sr.DiffJPEG(libjpeg=True)(x, q), ref)
+            assert near > 40, (q, near)
+            if q < 100:
+                assert near > psnr(sr.DiffJPEG(differentiable=False)(x, q), ref) + 6, q
+    # quality rounded to an integer, per image as for a number
+    lj = sr.DiffJPEG(libjpeg=True)
+    x = batch.float() / 255.0
+    assert torch.equal(lj(x, torch.full((6,), 49.6, device="cuda")), lj(x, 50))
+    # the mode is read on every call
+    j = sr.DiffJPEG(differentiable=False)
+    j(x, 50)
+    j.libjpeg = True
+    assert torch.equal(j(x, 50), lj(x, 50))

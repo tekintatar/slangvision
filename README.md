@@ -142,14 +142,18 @@ timm's `Mixup`, with per-batch, per-pair or per-image mixing.
 ```python
 # was: from basicsr.utils.img_process_util import USMSharp
 #      from basicsr.data.degradations import random_add_gaussian_noise_pt, random_add_poisson_noise_pt
-from slangvision.sr import USMSharp, random_add_gaussian_noise_pt, random_add_poisson_noise_pt
+#      from basicsr.utils import DiffJPEG
+from slangvision.sr import (DiffJPEG, USMSharp, random_add_gaussian_noise_pt,
+                            random_add_poisson_noise_pt)
 ```
 
 Drop-in replacements for the BasicSR functions that Real-ESRGAN's training
 step calls on the GPU, with the same arguments and results. Its USM
 sharpening of the targets takes 1.5 ms instead of 118 ms per batch of 12 at
-400×400, and its Poisson noise 0.5 ms instead of 7 ms (RTX PRO 4500): making
-Real-ESRGAN's low-resolution batch drops from 127 ms to 7.6 ms.
+400×400, its Poisson noise 0.5 ms instead of 7 ms and its JPEG 0.3 ms
+instead of 1.5 ms (RTX PRO 4500). With the first two swapped, making
+Real-ESRGAN's low-resolution batch drops from 127 ms to 7.5 ms; swapping the
+JPEG as well saves another 2.4 ms.
 
 ## Custom ops
 
