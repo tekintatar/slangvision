@@ -21,9 +21,16 @@ import slangpy as spy  # noqa: E402
 
 import slangvision as A  # noqa: E402
 from slangvision import sr  # noqa: E402
-from slangvision.testing import (_replay, diff_jpeg_reference,  # noqa: E402
-                                 max_reference_error, poisson_noise_reference,
-                                 usm_sharp_reference)
+from slangvision.testing import (_replay, compare_to_reference,  # noqa: E402
+                                 diff_jpeg_reference, max_reference_error,
+                                 poisson_noise_reference, usm_sharp_reference)
+
+try:        # one clear message instead of every test failing the same way
+    from slangvision import _runtime  # noqa: E402
+
+    _runtime.device()
+except RuntimeError as e:
+    pytest.exit(f"the CUDA tests cannot run: {e}", returncode=1)
 
 MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 TOL32 = 1e-4        # fp32 output vs torchvision (normalized units)
@@ -1408,3 +1415,27 @@ def test_gaussian_noise_same_on_batch_adds_one_field(batch):
 def test_one_tap_blurs_match_torchvision(batch):
     _check([A.RandomCrop(64), A.GaussianBlur((1, 5), sigma=(0.5, 2.0))], batch)
     _check([A.RandomCrop(64), A.GaussianBlur(1)], batch)
+
+
+def test_compare_to_reference_counts_values_and_images(images):
+    pipe = A.Compose([A.RandomResizedCrop(64), A.ColorJitter(0.4, 0.4), A.Normalize(MEAN, STD)],
+                     dtype=torch.float32)
+    torch.manual_seed(0)
+    good = compare_to_reference(pipe, images)
+    assert good.fraction == 0.0 and good.images == [] and good.max < good.tol == 1e-4
+
+    class Wrong(A.ColorOp):        # gamma, but its reference says identity
+        params = {"g": A.Uniform(0.5, 2.0)}
+        slang = "float4 apply(float4 c, float g) { return clamp01(pow(c, float4(g))); }"
+
+        def reference(self, img, g):
+            return img
+
+    bad = compare_to_reference(A.Compose([A.RandomResizedCrop(64), Wrong(p=0.5)]), images)
+    assert 0.0 < bad.fraction < 1.0 and 0 < len(bad.images) < len(images) and bad.tol == 4e-3
+
+
+def test_hwc_images_without_the_layout_get_a_hint():
+    with pytest.raises(ValueError, match='layout="hwc"'):
+        A.Compose([A.RandomResizedCrop(32)])(
+            [torch.zeros(40, 50, 3, dtype=torch.uint8, device="cuda")])

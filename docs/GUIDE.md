@@ -61,8 +61,12 @@ compiled torch bridge (`slangpy-torch`) is optional: without it, slangvision
 uses SlangPy's pure-Python torch bridge for its own calls, which adds under
 0.1 ms per batch.
 
-The first call of a pipeline compiles it (about 1 s, plus about 1 s to set up
+The first call of a pipeline compiles it (about 1.6 s, including setting up
 the GPU device once per process); later calls reuse the compiled kernels.
+The CUDA code NVRTC makes is also cached on disk, in
+`~/.cache/slangvision/kernels` (or `$XDG_CACHE_HOME/slangvision/kernels`), so
+a new process with the same pipeline gets going in about 1 s. `SLANGVISION_CACHE_DIR` moves the cache
+(empty turns it off); deleting the folder is always safe.
 
 `setup` adds one link, `libnvrtc.so`, to SlangPy's package folder, because
 SlangPy looks for NVRTC under that name and PyTorch's copy has a versioned
@@ -84,7 +88,10 @@ pip install "cuda-toolkit[nvrtc,cudart]==13.0.*"   # use your driver's CUDA vers
 
 pip then reports a dependency conflict (torch asks for 13.2), but it installs
 the packages, and PyTorch keeps working: we trained a model with it, with
-and without `torch.compile`.
+and without `torch.compile`. Do this after your other installs: a later
+`pip install` of torch or torchvision, or of anything that requires them
+(`pip install -e ".[dev]"` included), puts PyTorch's NVRTC back, and
+SlangVision stops with the same error until you pin it again.
 
 ### Your own CUDA Toolkit
 
@@ -502,14 +509,17 @@ Each neighbourhood op starts a new pass over the image.
 Check an op against its `reference` with `slangvision.testing`:
 
 ```py
-from slangvision.testing import max_reference_error
+from slangvision.testing import compare_to_reference, max_reference_error
 
-err = max_reference_error(pipe, images)
+err = max_reference_error(pipe, images)       # the largest difference
+diff = compare_to_reference(pipe, images)     # diff.max, diff.fraction, diff.images
 ```
 
 It runs the pipeline, replays each image's random values through torch
 references (torchvision for the built-in transforms, your `reference` for
-your ops) and returns the largest absolute difference. Training never
+your ops) and returns the largest absolute difference; `compare_to_reference`
+also says how many values and which images differ by more than the output
+dtype's rounding (see [Accuracy](#accuracy)). Training never
 imports this module. `pipe.source` shows the generated Slang.
 
 ## Coming from Albumentations
@@ -567,11 +577,18 @@ class RandomBrightnessContrast(A.ColorOp):
 | `RandomPosterize`, `RandomEqualize` | step functions: a resampled value within float rounding of a level edge can land on the other side. In one pass, about 1 value in 100,000 (posterize, by one level) and 1 in 30,000 to 1 in 3,000 depending on the ops before it (equalize, by up to 2/255: one moved pixel can shift the lookup table). After a blur, warp or sharpness with float16 output, the float16 image between passes moves more values across edges: about 1 in 1,000 for posterize and 1 in 100 for equalize (by up to 3/255). On images that are not resampled they match exactly |
 | `RandAugment` | float32 output: as its ops (above and below); in a recipe after a crop, under 3 in 1,000 values differ (step ops at level edges, nearest warps at rounding ties). float16 output: the float16 image between its passes makes equalize land a level (1/255) away from torchvision's float32 result for about 2% of values; `dtype=torch.float32` keeps float32 between passes (2.84 to 3.63 ms per batch of 256 in the RandAugment recipe, measured with an ad-hoc script) |
 | `TrivialAugmentWide`, `AutoAugment` | as `RandAugment`: float32 output exact on images that are not resampled with bilinear warps (AutoAugment's second op can meet a level edge in the first op's output: about 1 value in 100,000); in a recipe after a crop, a few values in a million differ with nearest warps (tests allow 3 in 1,000). float16 output: 2% (TrivialAugmentWide) to 3-4% (AutoAugment's ImageNet and SVHN policies) of values a level away where equalize follows a float16 intermediate |
+| `TrivialAugmentWide` translate | torch builds the magnitude table in float32 with a vectorized CPU kernel; on some CPUs (seen on an Arm Mac and an AMD EPYC) bin 15 of 31 comes out 15.999999, so torchvision shifts those images 15 pixels and SlangVision 16 (its table is computed the plain way): every image that draws translate at that bin differs as a whole, a few percent of a batch |
 | `TimmRandAugment` | against timm on uint8 Pillow images, one op on images that are not resampled: invert, posterize, solarize, solarize-add and equalize match exactly; warps, brightness, contrast and autocontrast are 0 to 1 uint8 step above Pillow's (Pillow truncates); colour and sharpness up to half a step times |1 - factor| further (Pillow also rounds the luma and smoothed images: -0.45 to +1.45 steps at magnitudes up to 10). In a recipe after a crop (timm sees the crop rounded to uint8): mean difference under 0.6 steps, under 2 in 1,000 values more than 3 steps away (values near a posterize, solarize or equalize level edge), float32 and float16 output alike |
 | warps with `interpolation="nearest"` | about 1 pixel in 100,000 (1 in 20,000 for `RandomPerspective`) takes the neighbouring source pixel: torchvision computes the sampling positions in float32 with a different rounding, so a position within about 1e-5 pixels of a pixel boundary can go either way. Positions exactly on a half pixel, which round magnitudes can produce on whole rows (RandAugment's ShearX and ShearY at magnitude 20 shift every fifth row or column by a whole number plus a half: those pixels are the only ones that differ), round half to even here and either way in torchvision. Bilinear warps match like the other ops |
 | float16 output after a warp or blur | the image between passes is float16 too, so colour ops after it can scale that rounding (up to about 8e-3 at normalized values with `ColorJitter(0.4, 0.4, 0.4, 0.1)` after a warp) |
 
 torchvision's uint8 path rounds after every op; this matches its float path.
+
+To check your own pipeline, `slangvision.testing.compare_to_reference(pipe,
+images)` replays each image's random values through torchvision and returns
+the largest difference, the fraction of values off by more than the output
+dtype's rounding, and which images they are in: a handful of values at a step
+edge, or whole images from the case above, look different from a wrong op.
 
 ## Performance
 

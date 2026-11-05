@@ -77,7 +77,7 @@ void perspective_coeffs(int W, int H, int4 ex, int4 ey, out double m[8])
                 A[r][j] -= f * A[col][j];
         }
     }
-    double s[8];
+    double s[8] = { 0.0l, 0.0l, 0.0l, 0.0l, 0.0l, 0.0l, 0.0l, 0.0l };   // all set below
     for (int i = 7; i >= 0; --i)
     {
         double acc = A[i][8];

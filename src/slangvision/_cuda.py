@@ -186,7 +186,9 @@ def _plan() -> Nvrtc | None:
             f'matches the driver: pip install "cuda-toolkit[nvrtc,cudart]=='
             f'{_version(driver)}.*" (pip reports a conflict because torch asks for '
             f"{_version(newest.version)}, but installs it, and torch keeps working), or "
-            "update the driver")
+            "update the driver. Pin it after your other installs: a later pip install "
+            "of torch or torchvision (or anything that requires them) puts PyTorch's "
+            "NVRTC back")
     return n
 
 

@@ -39,19 +39,27 @@ Linux NVIDIA host with the scripts in `scripts/cuda_box/`.
 
 ## Adding a transform
 
-1. **Match torchvision's float functional image by image.** Write it as a
-   `ColorOp` or `NeighborhoodOp` (the public custom-op API) where it fits;
-   its Slang functions go in the matching file in `src/slangvision/shaders/`
-   (a new topic gets a new file; every `.slang` file there is loaded).
-   Follow the CUDA hot-loop rules in AGENTS.md (no float3/float2).
-2. **Give it a reference** in `src/slangvision/testing.py`: the
-   torchvision call that replays the transform's per-image random values.
-3. **Test it on CUDA** in `tests/test_pipelines.py` through
-   `slangvision.testing.max_reference_error`; argument and pipeline-rule checks that
-   need no GPU go in `tests/test_api.py`.
-4. **Document it** in the transform table of [docs/GUIDE.md](docs/GUIDE.md),
-   the transform list in [README.md](README.md) and
-   [docs/TESTING.md](docs/TESTING.md).
+1. **Match torchvision's float functional image by image.** Write it in
+   `src/slangvision/transforms.py`, as a `ColorOp` or `NeighborhoodOp` (the
+   public custom-op API) where it fits, the way `RandomInvert` or
+   `RandomSolarize` are; its Slang functions go in the matching file in
+   `src/slangvision/shaders/` (a new topic gets a new file; every `.slang`
+   file there is loaded). Follow the CUDA hot-loop rules in AGENTS.md (no
+   float3/float2).
+2. **Export it** from `src/slangvision/__init__.py`: the import and
+   `__all__` (both alphabetical).
+3. **Give it a reference** in `src/slangvision/testing.py` (`_reference`):
+   the torchvision call that replays the transform's per-image random values.
+   Built-in transforms use torchvision here, not a `reference` method; that
+   method is for users' own ops, which have no torchvision call to replay.
+4. **Test it on CUDA** in `tests/test_pipelines.py`: add it to the
+   `test_op_matches_torchvision` list (or a recipe list), which compares it
+   with its reference image by image, plus anything specific to it. Argument and pipeline-rule checks that need no GPU go in
+   `tests/test_api.py`.
+5. **Document it** in four places: the transform table of
+   [docs/GUIDE.md](docs/GUIDE.md), the transform table in
+   [README.md](README.md), [docs/TESTING.md](docs/TESTING.md) (its
+   evidence row) and `CHANGELOG.md` under `Unreleased`.
 
 ## Releasing
 

@@ -1,8 +1,15 @@
 """Check a pipeline against torchvision, image by image.
 
-    from slangvision.testing import max_reference_error
+    from slangvision.testing import compare_to_reference, max_reference_error
 
     err = max_reference_error(pipe, images)    # largest absolute difference
+    diff = compare_to_reference(pipe, images)  # how many values, which images
+
+A single largest difference cannot tell one value at a rounding edge from a
+wrong op: ``compare_to_reference`` also gives the fraction of values and the
+images that differ by more than the output dtype's rounding, so a few
+step-function edge cases (see the guide's Accuracy table) can be told apart
+from a real mismatch.
 
 The pipeline runs on the GPU as usual; then each image's sampled random
 values (crop box, flip, jitter factors and order, ...) are replayed through
@@ -17,7 +24,7 @@ module.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from . import transforms as T
 from ._base import Binding, Transform, _UserOp
@@ -26,7 +33,19 @@ from ._compile import Compose, _walk
 if TYPE_CHECKING:
     import torch
 
-__all__ = ["max_reference_error"]
+__all__ = ["ReferenceDiff", "compare_to_reference", "max_reference_error"]
+
+#: per output dtype, the difference float rounding alone can cause (normalized
+#: values up to about 2.6): what the tests allow
+_TOLERANCE = {"float32": 1e-4, "float16": 4e-3, "bfloat16": 1.6e-2}
+
+
+class ReferenceDiff(NamedTuple):
+    """How a pipeline's output differs from the references (output units)."""
+    max: float              #: largest absolute difference (NaN if nothing comparable)
+    fraction: float         #: share of compared values off by more than ``tol``
+    images: list[int]       #: indices of the images with any value off by more than ``tol``
+    tol: float              #: the threshold used
 
 _MODES: dict[str, Any] = {}     # filled with torchvision's InterpolationMode on first use
 
@@ -38,13 +57,30 @@ def max_reference_error(pipeline: Compose, images: Any, layout: str = "chw") -> 
     noise (GaussianNoise, RandomErasing's "random" fill) cannot be replayed,
     so those pixels are skipped; if nothing is comparable (GaussianNoise
     with sigma > 0 anywhere in the pipeline), the result is NaN."""
+    return compare_to_reference(pipeline, images, layout).max
+
+
+def compare_to_reference(pipeline: Compose, images: Any, layout: str = "chw",
+                         tol: float | None = None) -> ReferenceDiff:
+    """Run ``pipeline`` on ``images`` and compare it with the torch
+    references fed the same random values: the largest difference, the
+    fraction of values off by more than ``tol`` and which images they are in.
+    ``tol`` defaults to what the output dtype's rounding allows (1e-4 for
+    float32, 4e-3 for float16, 1.6e-2 for bfloat16). Noise pixels are skipped
+    as in :func:`max_reference_error`."""
     out, params = pipeline._run(images, layout)
     ref = _replay(pipeline, images, params, layout)
     if out.shape != ref.shape:
         raise ValueError(f"output shape {tuple(out.shape)} differs from the references' "
                          f"{tuple(ref.shape)}")
+    tol = _TOLERANCE[pipeline._dtype] if tol is None else float(tol)
     keep = ~ref.isnan()         # random noise (GaussianNoise, RandomErasing) is not replayed
-    return float((out.float() - ref)[keep].abs().max()) if keep.any() else float("nan")
+    if not keep.any():
+        return ReferenceDiff(float("nan"), float("nan"), [], tol)
+    diff = (out.float() - ref).abs().nan_to_num(0.0)
+    off = (diff > tol) & keep
+    return ReferenceDiff(float(diff[keep].max()), float(off.sum() / keep.sum()),
+                         off.flatten(1).any(1).nonzero().flatten().tolist(), tol)
 
 
 def _replay(pipeline: Compose, images: Any, params: "torch.Tensor",

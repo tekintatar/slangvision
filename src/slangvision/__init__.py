@@ -19,7 +19,7 @@ with :class:`ColorOp` and :class:`NeighborhoodOp`. Needs PyTorch with CUDA.
 See docs/GUIDE.md.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0.dev0"
 
 # Load SlangPy (and, through it, torch) at import: if DALI loads its native
 # libraries before SlangPy, SlangPy crashes creating its CUDA device, so
@@ -105,3 +105,20 @@ __all__ = [
     "TrivialAugmentWide",
     "Uniform",
 ]
+
+# torchvision transforms with no counterpart here, because Compose already
+# does their job: a hint instead of a bare AttributeError when porting
+_PORTING = {
+    "ToImage": "images go in as uint8 CUDA tensors (or lists of them) already",
+    "PILToTensor": "decode to uint8 CUDA tensors (see the guide's Inputs and decoders)",
+    "ToTensor": "images go in as uint8 tensors and come out as floats in [0, 1]",
+    "ToDtype": "the output is already float: choose it with Compose(dtype=...)",
+    "ConvertImageDtype": "the output is already float: choose it with Compose(dtype=...)",
+    "ToPureTensor": "the output is already a plain tensor",
+}
+
+
+def __getattr__(name: str):
+    if name in _PORTING:
+        raise AttributeError(f"slangvision has no {name}: drop it; {_PORTING[name]}")
+    raise AttributeError(f"module 'slangvision' has no attribute {name!r}")

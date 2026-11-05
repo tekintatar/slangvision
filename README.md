@@ -63,8 +63,8 @@
 Linux with an NVIDIA GPU, Python 3.10–3.13 and PyTorch with CUDA:
 
 ```bash
-pip install slangvision
-python -m slangvision setup     # once per environment
+pip install slangvision torchvision   # torchvision: for checking results against it
+python -m slangvision setup           # once per environment
 ```
 
 For the unreleased transforms on `main`:
@@ -72,10 +72,19 @@ For the unreleased transforms on `main`:
 
 No CUDA Toolkit or environment variables are needed: SlangVision compiles
 its kernels with the NVRTC that pip installs with PyTorch, and `setup` adds
-the one link SlangPy needs to find it. If NVRTC is newer than your driver, or
-you use your own CUDA Toolkit, see
-[Requirements](https://github.com/tekintatar/slangvision/blob/main/docs/GUIDE.md#requirements);
-SlangVision's errors say which versions it found.
+the one link SlangPy needs to find it. `setup` checks that this NVRTC is not
+newer than your driver supports. If it is (PyTorch 2.15's NVRTC 13.2 with
+driver 580, for example), update the driver or pin an older NVRTC, **after**
+your other installs, since any later install of torch or torchvision puts
+PyTorch's NVRTC back:
+
+```bash
+pip install "cuda-toolkit[nvrtc,cudart]==13.0.*"   # your driver's CUDA version (nvidia-smi)
+```
+
+pip warns about a conflict with torch's pin; PyTorch keeps working. Your own
+CUDA Toolkit works too: see
+[Requirements](https://github.com/tekintatar/slangvision/blob/main/docs/GUIDE.md#requirements).
 
 ## Quick start
 
@@ -97,8 +106,9 @@ x = train(images)   # (64, 3, 224, 224) float16, on the current CUDA stream
   any sizes.
 - Output: `Compose(..., dtype=torch.float16)` by default; `torch.bfloat16`
   and `torch.float32` too.
-- The first call compiles the pipeline (about 1 s, plus about 1 s to set up
-  the GPU once per process); later calls reuse the kernels.
+- The first call compiles the pipeline (about 1.6 s); later calls reuse the
+  kernels, and compiled kernels are cached on disk, so a new process gets
+  going in about 1 s.
 
 ## Transforms
 

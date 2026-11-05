@@ -97,7 +97,7 @@ def device() -> spy.Device:
     except _cuda.SetupError as e:
         raise RuntimeError(f"slangvision could not set up NVRTC: {e}.") from None
     try:
-        dev = spy.create_torch_device(type=spy.DeviceType.cuda)
+        dev = _create_device()
     except RuntimeError as e:
         raise RuntimeError(f"slangvision could not create SlangPy's CUDA device "
                            f"({_summarize(e)}). {_NVRTC_HINT}. {_cuda.describe()}.") from e
@@ -113,6 +113,50 @@ def device() -> spy.Device:
                            f"{_NVRTC_HINT}. {_cuda.describe()}.") from e
     _DEVICES[index] = dev
     return dev
+
+
+def _kernel_cache() -> Path | None:
+    """Where SlangPy keeps compiled kernels between processes:
+    $SLANGVISION_CACHE_DIR (empty: no cache), else the user cache folder."""
+    import os
+
+    from ._cuda import _cache_dir
+
+    path = os.environ.get("SLANGVISION_CACHE_DIR")
+    if path == "":
+        return None
+    return Path(path) if path else Path(_cache_dir()) / "kernels"
+
+
+def _create_device() -> spy.Device:
+    """spy.create_torch_device's CUDA device (sharing PyTorch's context), plus
+    an on-disk cache of compiled kernels, so a new process skips NVRTC for
+    pipelines it compiled before.
+    SlangPy's "no supported shader model found" warning at creation is
+    harmless for CUDA and hidden."""
+    import torch
+
+    torch.cuda.init()
+    torch.cuda.current_stream()             # makes torch set its context
+    desc: dict[str, Any] = {
+        "type": spy.DeviceType.cuda,
+        "compiler_options": {"include_paths": [str(Path(spy.__file__).parent / "slang")]},
+        "existing_device_handles": spy.get_cuda_current_context_native_handles(),
+    }
+    cache = _kernel_cache()
+    logger = spy.Logger.get()
+    level = logger.level
+    logger.level = spy.LogLevel.error
+    try:
+        if cache is not None:
+            try:            # not SlangPy's module cache: with it, loading many
+                            # modules in one process segfaults (SlangPy 0.42)
+                return spy.Device(**desc, shader_cache_path=str(cache / "shaders"))
+            except RuntimeError:
+                pass                        # an unusable cache folder: run without it
+        return spy.Device(**desc)
+    finally:
+        logger.level = level
 
 
 @contextlib.contextmanager
@@ -181,8 +225,10 @@ def _checked(t: Any, dev: "torch.device", layout: str, batched: bool) -> "torch.
         raise ValueError(f"images must be on the current CUDA device {dev}, got {t.device}")
     channels = t.shape[-1] if layout == "hwc" else t.shape[-3]
     if channels != 3:
+        hint = (" (they look like (H, W, 3): pass layout=\"hwc\")"
+                if layout == "chw" and t.shape[-1] == 3 else "")
         raise ValueError(f"images must have 3 (RGB) channels in layout {layout!r}, "
-                         f"got shape {tuple(t.shape)}")
+                         f"got shape {tuple(t.shape)}{hint}")
     hw = t.shape[-2:] if layout == "chw" else t.shape[-3:-1]
     if 0 in hw:
         raise ValueError(f"images must not be empty, got shape {tuple(t.shape)}")

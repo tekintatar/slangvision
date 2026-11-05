@@ -350,3 +350,12 @@ def test_gaussian_noise_same_on_batch_drops_the_image_index():
     shared = A.Compose([A.GaussianNoise(same_on_batch=True)]).source
     assert "normal4(uint(prm(p, b, 6)), 0, x, y)" in shared
     assert ", b, x, y)" in A.Compose([A.GaussianNoise()]).source
+
+
+def test_porting_hints():
+    with pytest.raises(AttributeError, match="Compose\\(dtype=...\\)"):
+        A.ToDtype                                          # noqa: B018
+    with pytest.raises(AttributeError, match="has no attribute 'Nope'"):
+        A.Nope                                             # noqa: B018
+    with pytest.raises(TypeError, match="random.choice"):
+        A.RandomChoice([A.CutMix(num_classes=3), A.MixUp(num_classes=3)])

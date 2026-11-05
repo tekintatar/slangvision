@@ -29,6 +29,10 @@ def _size2(size: Any, name: str) -> tuple[int, int]:
     return h, w
 
 
+_MIXER_HINT = ("; MixUp and CutMix mix the batch after Compose, so pick one per batch "
+               "with random.choice([cutmix, mixup]) or torchvision's v2.RandomChoice")
+
+
 def _range(value: Any, name: str, center: float, bound: tuple[float, float],
            around_center: bool, owner: str = "ColorJitter") -> tuple[float, float] | None:
     """torchvision ColorJitter range checking; None when the op is a no-op."""
@@ -1421,7 +1425,8 @@ class RandomApply(Transform):
             raise ValueError("RandomApply needs at least one transform")
         for t in self.transforms:
             if not isinstance(t, Transform):
-                raise TypeError(f"RandomApply takes slangvision transforms, got {t!r}")
+                raise TypeError(f"RandomApply takes slangvision transforms, got {t!r}"
+                                + _MIXER_HINT * hasattr(t, "_mix_images"))
         kinds = {t._kind for t in self.transforms}
         if kinds - {"pointwise", "neighbourhood", "warp"}:
             raise ValueError("RandomApply holds colour ops, blurs and warps, not resizes, "
@@ -1472,7 +1477,8 @@ class RandomChoice(Transform):
             raise ValueError("RandomChoice needs at least one transform")
         for t in self.transforms:
             if not isinstance(t, Transform):
-                raise TypeError(f"RandomChoice takes slangvision transforms, got {t!r}")
+                raise TypeError(f"RandomChoice takes slangvision transforms, got {t!r}"
+                                + _MIXER_HINT * hasattr(t, "_mix_images"))
         weights = [1.0] * len(self.transforms) if p is None else [float(v) for v in p]
         if len(weights) != len(self.transforms) or min(weights) < 0 or sum(weights) <= 0:
             raise ValueError("RandomChoice: p needs one non-negative weight per transform")
