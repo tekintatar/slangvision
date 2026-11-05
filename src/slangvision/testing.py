@@ -8,7 +8,10 @@ The pipeline runs on the GPU as usual; then each image's sampled random
 values (crop box, flip, jitter factors and order, ...) are replayed through
 torchvision's functional API for the built-in transforms, and through the
 ``reference`` method of each ColorOp or NeighbourhoodOp you define. Needs
-torchvision. Training never imports this module.
+torchvision. TimmRandAugment is replayed through timm's own Pillow ops (needs
+timm) on the image rounded to uint8, as timm sees it, so it differs by
+Pillow's uint8 rounding: about 1/255 per op. Training never imports this
+module.
 """
 
 from __future__ import annotations
@@ -130,6 +133,8 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
             img = ra._apply_image_or_video_transform(  # type: ignore[assignment]
                 img, name, magnitude, interpolation=ra.interpolation, fill=ra._fill)
         return img
+    if isinstance(t, T.TimmRandAugment):
+        return _timm_reference(t, b, img, row)
     if isinstance(t, (T.RandomAutocontrast, T.RandomEqualize, T.RandomAdjustSharpness)):
         if row[b.k(t)] <= 0.5:
             return img
@@ -177,6 +182,42 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
             return F.posterize(img, t.bits)
         return t.reference(img, **values)
     raise TypeError(f"no torch reference for {type(t).__name__}")
+
+
+def _timm_reference(t: Any, b: Binding, img: "torch.Tensor", row: list[float]) -> "torch.Tensor":
+    """timm's RandAugment ops on the image as a uint8 Pillow image, with this
+    image's op, magnitude, sign and interpolation."""
+    import numpy as np
+    import timm.data.auto_augment as aa
+    import torch
+    from PIL import Image
+
+    names = aa._RAND_INCREASING_TRANSFORMS if t.increasing else aa._RAND_TRANSFORMS
+    hparams = {"translate_pct": t.translate_pct}
+    fill = tuple(int(round(v * 255)) for v in t.fill)
+    u8 = (img.clamp(0, 1) * 255).round().to(torch.uint8).permute(1, 2, 0).cpu().numpy()
+    pil = Image.fromarray(np.ascontiguousarray(u8))
+    negate = aa._randomly_negate
+    try:
+        for step in t._children():
+            k = b.k(step)
+            if row[k] < 0:
+                continue
+            name = names[int(row[k])]
+            sign = row[k + 2]
+            aa._randomly_negate = lambda v: -v if sign < 0 else v   # the drawn sign
+            level = aa.LEVEL_TO_ARG[name]
+            args: tuple[Any, ...] = level(row[k + 1], hparams) if level is not None else ()
+            resample = Image.Resampling.BICUBIC if row[k + 3] > 0.5 else Image.Resampling.BILINEAR
+            if name.startswith("Posterize") and args[0] <= 0:
+                # keep no bits: black, as Pillow up to 12 gives (Pillow 13 raises)
+                pil = Image.new("RGB", pil.size)
+                continue
+            pil = aa.NAME_TO_OP[name](pil, *args, fillcolor=fill, resample=resample)
+    finally:
+        aa._randomly_negate = negate
+    out = torch.from_numpy(np.asarray(pil).copy()).permute(2, 0, 1)
+    return out.to(img.device).float() / 255.0
 
 
 def _pad(F: Any, img: "torch.Tensor", padding: list[int], t: Any) -> "torch.Tensor":

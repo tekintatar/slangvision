@@ -159,7 +159,8 @@ class Transform:
     #: geometry | flip | pointwise | neighbourhood | warp | normalize | erase
     _kind = "pointwise"
     #: what the statistic pre-pass computes: "mean" (gray mean, 1 slot),
-    #: "minmax" (per-channel min, then max - min: 6 slots) or "lut" (per-channel
+    #: "mean_pil" (Pillow's uint8 luma mean, rounded to a level: 1 slot), "minmax"
+    #: (per-channel min, then max - min: 6 slots) or "lut" (per-channel
     #: equalization tables from 256-bin histograms: 768 slots)
     _stat_kind = "mean"
     same_on_batch = False

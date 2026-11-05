@@ -99,7 +99,9 @@ versions it saw.
 `RandomEqualize`, `RandAugment`, `RandomApply`, `RandomChoice`, `Normalize` and
 `RandomErasing`, with torchvision's names and
 parameters,
-including bilinear or bicubic resizing. Every random transform takes
+including bilinear or bicubic resizing. `TimmRandAugment("rand-m9-mstd0.5-inc1")`
+is timm's RandAugment, the one DeiT, ConvNeXt and Swin train with, with
+Pillow's ops. Every random transform takes
 `same_on_batch=False`. A SimCLR pipeline:
 
 ```python
@@ -196,8 +198,8 @@ script that is not in this repository. Method and caveats are in the
 
 - CUDA only (Linux with an NVIDIA GPU), and not inside CUDA graph capture.
 - Run pipelines from one thread (SlangPy devices are thread-affine).
-- Not yet: timm's RandAugment, TrivialAugmentWide and AutoAugment (their
-  ops are here), masks and boxes.
+- Not yet: TrivialAugmentWide and AutoAugment (their ops are here), masks
+  and boxes.
 
 ## Related
 

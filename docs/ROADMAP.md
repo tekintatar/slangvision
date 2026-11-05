@@ -12,10 +12,10 @@
   RandomErasing, MixUp/CutMix, RandomRotation/RandomAffine/RandomPerspective
   (a warp pass), RandomInvert/RandomPosterize/RandomAdjustSharpness/
   RandomAutocontrast/RandomEqualize (torchvision's float behaviour; per-image
-  statistics from pre-passes), torchvision's RandAugment. Next: the other
-  policies below.
-- **Phase 2 — policies**: torchvision's RandAugment ✅ (2026-11-05), then
-  timm's RandAugment (the variant most recipes use), TrivialAugmentWide and
+  statistics from pre-passes), torchvision's and timm's RandAugment. Next:
+  the other policies below.
+- **Phase 2 — policies**: torchvision's RandAugment ✅ (2026-11-05), timm's
+  RandAugment ✅ (2026-11-05, Pillow's ops on float values), then TrivialAugmentWide and
   AutoAugment, as per-image choices among the same ops (geometric ones
   through the warp pass). Float behaviour, decided 2026-11-05: torchvision's uint8 path cannot
   be matched exactly anyway (its uint8 resize differs); most ops differ by

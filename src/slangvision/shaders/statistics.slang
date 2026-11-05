@@ -3,11 +3,6 @@
 // kernels): RandomAutocontrast (per-channel min and max) and RandomEqualize
 // (per-channel histograms, turned into lookup tables by Compose).
 
-// torchvision's float -> uint8 conversion (to_dtype_image, scale=True):
-// value * 255.999 truncated. Clamped here; torchvision's cast of a value
-// outside [0, 1] (bicubic overshoot) is undefined and in practice wraps.
-int q255(float v) { return clamp(int(v * 255.999), 0, 255); }
-
 // Histogram counting for one channel: runs of equal bins are added at once,
 // which keeps flat regions from piling atomics onto one counter.
 void hist_add(uint* h, int q, inout int prev, inout uint run)

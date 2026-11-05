@@ -36,6 +36,7 @@ output and 4e-3 for float16 output, in normalized units.
 | RandomAutocontrast | reference: exact on unresampled images, flat/two-valued/ramp images; after ColorJitter (the min/max read after a contrast change), in RandomChoice after a blur; `p=0` leaves images untouched |
 | RandomEqualize | reference: exact on unresampled images and on flat (PIL's step 0), two-valued, dominant-value and ramp images; after a crop, ColorJitter and a blur, inside RandomChoice (only some images choose it), off quantization edges (under 2e-3 of values; measured about 3e-4 of pixels) |
 | RandAugment | reference (torchvision's own op functions and magnitude tables, fed the drawn op and sign): one op on 120 unresampled images, every op drawn: exact with bilinear warps (magnitude 9, and 30 with RGB fill); nearest (magnitude 9, 0 with 5 bins) within 1e-3 of values, at magnitude 20 with fill 0.5 within 5e-3 (its shear puts whole rows on half pixels, exact ties); equalize and autocontrast after it; two and three ops in a recipe between flips (under 3e-3 of values, edge cases of step ops and nearest ties); float16 output (under 5% of values, 90% within float16 rounding); op frequencies uniform and signs even per image; `same_on_batch` shares the ops |
+| TimmRandAugment | reference (timm's own op functions and level functions on the image rounded to uint8 Pillow, fed the drawn op, magnitude, sign and interpolation; posterize at 0 bits as Pillow 12): one op on 120 unresampled images, every op drawn, bilinear, bicubic and random interpolation, `inc0` and `inc1`, `mstd101` (uniform), magnitudes 10, 0 and 25 (`mmax30`: posterize at 10 and -6 bits), RGB fill and `translate_pct`: invert, posterize, solarize, solarize-add and equalize exact; warps, brightness, contrast, autocontrast within Pillow's truncation (0 to 1 uint8 step); colour and sharpness within half a step times |1 - factor| more; recipes after a crop between flips (2 and 3 layers, float32 and float16): mean under 0.6 steps, under 2e-3 of values beyond 3 steps; config parsing as timm's; op frequencies uniform, `p`, magnitude noise (mean 9, std 0.49, clamped at 10), uniform magnitudes, signs and interpolation per image; `same_on_batch` shares every value |
 | ColorOp, NeighbourhoodOp | reference: user-defined gamma and box blur (reflect, clamp), helper-name isolation, compile-error message |
 
 Also on CUDA: batch tensor, CHW list, HWC list and a non-contiguous HWC view
@@ -131,3 +132,8 @@ validation of newer code.
   mismatches at magnitude 20 checked to be ShearX rows and ShearY columns
   on exact half pixels only). Benchmark: `randaug` recipe, raw data in
   `benchmarks/results/rtx_pro_4500_randaug_2026-11-05.json`.
+- 2026-11-05, TimmRandAugment, same host and stack plus timm 1.0.31 and
+  Pillow 13.0.0 (box scripts' `CUDA_PATH`): 283 passed; after the review's fixes (posterize at 8+ bits, Pillow's integer luma for the contrast mean, timm's `p` above 1) and its added magnitude-25 cases, 284 passed. Benchmark:
+  `timmaug` recipe (with `imagenet` and `randaug` in the same run), raw data
+  in `benchmarks/results/rtx_pro_4500_timmaug_2026-11-05.json`; timm's
+  baseline on one core of the host's AMD EPYC 9335.

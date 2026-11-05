@@ -22,7 +22,8 @@ from .transforms import (CenterCrop, ColorJitter, GaussianBlur, Normalize, Pad, 
                          RandomAdjustSharpness, RandomAffine, RandomApply, RandomAutocontrast,
                          RandomChoice, RandomCrop, RandomEqualize, RandomErasing,
                          RandomHorizontalFlip, RandomPerspective, RandomResizedCrop,
-                         RandomRotation, RandomVerticalFlip, Resize, _RandAugmentOp, _Window)
+                         RandomRotation, RandomVerticalFlip, Resize, TimmRandAugment, _Policy,
+                         _PolicyOp, _Window)
 
 if TYPE_CHECKING:
     import torch
@@ -87,10 +88,12 @@ def _stats_kernel(kind: str, k: int, s: int, args: str, inp: str) -> list[str]:
                 f"        float4 c = chain_{s}({inp}, p, st, b, {k}, hit);",
                 f"        if (!hit) return{skip};"]
     head = f"(int3 pix, {args}, Tensor<float, 2> p, Tensor<float, 2> st"
-    if kind == "mean":         # gray sum; Compose divides by the pixel count
+    if kind in ("mean", "mean_pil"):   # gray sum; Compose divides by the pixel count
+        # mean_pil: Pillow's uint8 luma, summed exactly (whole numbers below 2**24)
+        gray = "float(luma_pil(c))" if kind == "mean_pil" else "gray(c)"
         return [f"float stats_{k}{head}, int OW, int OH)", "{",
                 "    int b = pix.z; int y = pix.y; bool hit; float sum = 0.0;",
-                *loop(" 0.0"), "        sum += gray(c);", "    }", "    return sum;", "}", ""]
+                *loop(" 0.0"), f"        sum += {gray};", "    }", "    return sum;", "}", ""]
     if kind == "minmax":       # per-channel min and max of these pixels
         return [f"void stats_{k}{head}, RWTensor<float, 4> part, int OW, int OH)", "{",
                 "    int b = pix.z; int y = pix.y; bool hit;",
@@ -149,17 +152,17 @@ def _dtype_name(dtype: Any) -> str:
 _BUILT_IN = (RandomResizedCrop, Resize, CenterCrop, Pad, RandomCrop, RandomHorizontalFlip,
              RandomVerticalFlip, RandomRotation, RandomAffine, RandomPerspective, ColorJitter,
              GaussianBlur, RandomAdjustSharpness, RandomAutocontrast, RandomEqualize,
-             RandomApply, RandomChoice, Normalize, RandomErasing, RandAugment)
+             RandomApply, RandomChoice, Normalize, RandomErasing, RandAugment, TimmRandAugment)
 
 
 def _expand(transforms: Sequence[Transform]) -> list[Transform]:
     """The pipeline as Compose plans it: a policy becomes its op passes."""
-    return [s for t in transforms for s in (t._children() if isinstance(t, RandAugment) else [t])]
+    return [s for t in transforms for s in (t._children() if isinstance(t, _Policy) else [t])]
 
 
 def _walk(transforms: Sequence[Transform]):
     for t in _expand(transforms):
-        if not isinstance(t, (_BUILT_IN, _UserOp, _RandAugmentOp)):
+        if not isinstance(t, (_BUILT_IN, _UserOp, _PolicyOp)):
             raise TypeError(f"Compose takes slangvision transforms; define your own "
                             f"with ColorOp or NeighbourhoodOp, got {t!r}")
         yield t
@@ -534,6 +537,10 @@ class Compose:
                 if kind == "mean":
                     part = fn(grid, *inputs, params, st, OW, OH)
                     st[:, k] = part.sum((1, 2)) / float(OH * OW)
+                elif kind == "mean_pil":        # ImageEnhance.Contrast: int(mean + 0.5)
+                    part = fn(grid, *inputs, params, st, OW, OH)
+                    luma = part.sum((1, 2), dtype=torch.float64) / float(OH * OW)
+                    st[:, k] = (torch.floor(luma + 0.5) / 255.0).float()
                 elif kind == "minmax":
                     part = torch.empty(B, OH, chunks, 6, dtype=torch.float32, device=dev)
                     fn(grid, *inputs, params, st, part, OW, OH)

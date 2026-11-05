@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Added
+- `TimmRandAugment`: timm's RandAugment from its config string (`m`, `n`,
+  `p`, `mstd`, `mmax`, `inc`; default `"rand-m9-mstd0.5-inc1"`), with
+  Pillow's ops as timm runs them (affine resampling with a hard edge and the
+  ImageNet-mean fill, bilinear or Pillow's bicubic picked per op) on float
+  values. Matches timm to within Pillow's uint8 rounding; 2.9 ms per batch
+  of 256 after a crop and flip (RTX PRO 4500), against 310 ms for timm on
+  one CPU core. Posterize at 0 bits gives black, as Pillow 12 does (Pillow
+  13 raises there, which stops timm's own `rand-m9-mstd0.5-inc1` on about
+  1 image in 600).
 - `RandAugment` (torchvision's: `num_ops`, `magnitude`,
   `num_magnitude_bins`, `interpolation`, `fill`), with its ops and signs
   drawn per image; each op is a pass whose input warps, sharpens or copies

@@ -19,6 +19,11 @@
 #   randaug   RandomResizedCrop(224) + flip + RandAugment(2, 9) + Normalize
 #             (torchvision runs RandAugment on the uint8 crop, as its
 #             reference recipe does)
+#   timmaug   RandomResizedCrop(224) + flip + timm's RandAugment
+#             rand-m9-mstd0.5-inc1 + Normalize, against timm's own
+#             create_transform on Pillow images, one CPU core
+#   pip install timm (for timmaug)
+#   --recipes imagenet,randaug runs a subset
 # Input: a batch of photo-like 512x384 uint8 images already on the GPU, or
 # with --images DIR the first --batch JPEGs under DIR decoded on the GPU as a
 # list of their own sizes (then torchvision runs per image only: different
@@ -53,6 +58,14 @@
 # randaug, added 2026-11-05 (rtx_pro_4500_randaug_2026-11-05.json):
 #
 #   randaug    2.88 (2.58)   6.32 (6.48)         111 (15.2)              -
+#
+# timmaug, added 2026-11-05 (rtx_pro_4500_timmaug_2026-11-05.json; imagenet
+# and randaug in the same run within 2% of the rows above, torchvision's
+# per-image loop within 12%). timm 1.0.31, Pillow 13.0.0, one core of an AMD
+# EPYC 9335 (the host has 16; 334 ms in an earlier run):
+#
+#   recipe     slangvision   timm per image (Pillow, 1 CPU core)
+#   timmaug    2.87 (2.52)   310
 #
 # Honest read:
 # - torchvision's batch mode draws ONE random setting for the whole batch, so
@@ -110,7 +123,40 @@ def ours(interp: str = "bilinear") -> dict:
         "randaug": A.Compose([A.RandomResizedCrop(224, interpolation=interp),
                               A.RandomHorizontalFlip(), A.RandAugment(),
                               A.Normalize(MEAN, STD)]),
+        "timmaug": A.Compose([A.RandomResizedCrop(224, interpolation=interp),
+                              A.RandomHorizontalFlip(),
+                              A.TimmRandAugment("rand-m9-mstd0.5-inc1", interpolation=interp),
+                              A.Normalize(MEAN, STD)]),
     }
+
+
+def timm_per_image(x: torch.Tensor, interp: str):
+    """timm's training transform (crop, flip, RandAugment, ToTensor,
+    Normalize) on Pillow copies of the batch, one image at a time on one CPU
+    core, as one DataLoader worker runs it. Converting to Pillow is not timed."""
+    import timm.data.auto_augment as aa
+    from PIL import Image
+    from timm.data import create_transform
+
+    def posterize(img, bits, **_):
+        # timm asks for 0 bits at magnitude 10, which Pillow 13 rejects
+        # (ValueError) and Pillow 12 turned black: keep Pillow 12's result
+        return Image.new(img.mode, img.size) if bits == 0 else aa.posterize(img, bits)
+
+    for name in ("Posterize", "PosterizeIncreasing", "PosterizeOriginal"):
+        aa.NAME_TO_OP[name] = posterize
+    t = create_transform(224, is_training=True, auto_augment="rand-m9-mstd0.5-inc1",
+                         interpolation=interp, mean=MEAN, std=STD)
+    pils = [Image.fromarray(im.permute(1, 2, 0).cpu().numpy()) for im in x]
+
+    def run(_: torch.Tensor) -> torch.Tensor:
+        threads = torch.get_num_threads()
+        torch.set_num_threads(1)
+        try:
+            return torch.stack([t(im) for im in pils])
+        finally:
+            torch.set_num_threads(threads)
+    return run
 
 
 def torchvision_recipes(interp: str = "bilinear") -> dict:
@@ -195,6 +241,7 @@ def main() -> None:
     ap.add_argument("--interpolation", default="bilinear", choices=["bilinear", "bicubic"])
     ap.add_argument("--images", help="folder of JPEGs: time on the first --batch of them, "
                                      "decoded on the GPU as a list of their own sizes")
+    ap.add_argument("--recipes", help="comma-separated subset of the recipes")
     ap.add_argument("--json", help="write results to this file")
     args = ap.parse_args()
     if not torch.cuda.is_available():
@@ -204,11 +251,17 @@ def main() -> None:
     tv = torchvision_recipes(args.interpolation)
     ko = {} if args.images or args.interpolation != "bilinear" else kornia_recipes()
     rows = []
+    wanted = args.recipes.split(",") if args.recipes else None
     for recipe, pipe in ours(args.interpolation).items():
+        if wanted and recipe not in wanted:
+            continue
         methods = {"slangvision": pipe}
-        if not args.images:         # images of different sizes cannot form one batch tensor
+        if recipe == "timmaug":
+            methods["timm per image (Pillow, 1 CPU core)"] = timm_per_image(x, args.interpolation)
+        if recipe in tv and not args.images:    # images of different sizes cannot form one batch
             methods["torchvision batch (one setting)"] = tv[recipe]
-        methods["torchvision per image"] = lambda b, t=tv[recipe]: torch.stack([t(im) for im in b])
+        if recipe in tv:
+            methods["torchvision per image"] = lambda b, t=tv[recipe]: torch.stack([t(im) for im in b])
         if recipe in ko:
             methods["Kornia fp16 per image"] = lambda b, k=ko[recipe]: k(b.half() / 255.0)
         for name, fn in methods.items():

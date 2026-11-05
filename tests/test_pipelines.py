@@ -850,3 +850,85 @@ def test_rand_augment_draws_ops_and_signs_per_image(batch):
         assert abs((params[:, k + 1] > 0).float().mean().item() - 0.5) < 0.03
     k = pipe._b.k(shared._children()[0])
     assert torch.all(params[:, k] == params[0, k]) and torch.all(params[:, k + 1] == params[0, k + 1])
+
+
+# ---------------------------------------------------------- timm RandAugment
+def _timm_diff(transforms, images, dtype=torch.float32):
+    """Output minus timm's (Pillow on uint8, slangvision.testing), in uint8 steps."""
+    pipe = A.Compose(transforms, dtype=dtype)
+    torch.manual_seed(0)
+    out, params = pipe._run(images, "chw")
+    return (out.float() - _replay(pipe, images, params)) * 255.0, pipe, params
+
+
+@pytest.mark.parametrize("ra", [
+    A.TimmRandAugment("rand-m9-n1-p1.0-mstd0.5-inc1", interpolation="bilinear"),
+    A.TimmRandAugment("rand-m9-n1-p1.0-mstd0.5-inc1", interpolation="bicubic"),
+    A.TimmRandAugment("rand-m9-n1-p1.0-mstd0.5", fill=(0.2, 0.4, 0.6), translate_pct=0.3),
+    A.TimmRandAugment("rand-m10-n1-p1.0-mstd101-inc1"),
+    A.TimmRandAugment("rand-m10-n1-p1.0-inc1", interpolation="bilinear"),     # 0 bits, threshold 0
+    A.TimmRandAugment("rand-m0-n1-p1.0", interpolation="bilinear"),
+    A.TimmRandAugment("rand-m25-n1-p1.0-mmax30", interpolation="bilinear"),  # posterize 10 bits
+    A.TimmRandAugment("rand-m25-n1-p1.0-mmax30-inc1"),      # posterize -6 bits
+], ids=repr)
+def test_one_timm_op_on_unresampled_images_matches_timm_but_for_pillows_rounding(ra, many):
+    # Pillow rounds every result to uint8 and slangvision does not: resampling
+    # and blends with black or a constant truncate (0 to 1 step below ours);
+    # Color and Sharpness blend with a rounded luma or smoothed image too,
+    # which moves the result by up to half a step times |1 - factor|
+    d, pipe, params = _timm_diff([ra], many)
+    k = pipe._b.k(ra._children()[0])
+    ops = params[:, k].long()
+    assert set(ops.tolist()) == set(range(15))
+    for op, name in enumerate(A.transforms._TIMM_RA_OPS):
+        dd = d[ops == op]
+        lo, hi = dd.min().item(), dd.max().item()
+        if name in ("Equalize", "Invert", "Posterize", "Solarize", "SolarizeAdd"):
+            assert -1e-3 < lo and hi < 1e-3, name
+        elif name in ("Color", "Sharpness"):
+            r = 0.5 * (params[ops == op, k + 4] - 1.0).abs().max().item() + 1e-3
+            assert -r < lo and hi < 1.0 + r, name
+        else:
+            assert -1e-3 < lo and hi < 1.0 + 1e-3, name
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+@pytest.mark.parametrize("ra", [
+    A.TimmRandAugment(),
+    A.TimmRandAugment("rand-m9-n3-mstd0.5"),
+    A.TimmRandAugment("rand-m7-mstd101-inc1", interpolation="bicubic"),
+], ids=repr)
+def test_timm_rand_augment_in_a_recipe_matches_timm(ra, dtype, images):
+    # timm sees the crop rounded to uint8 and rounds after every op: values
+    # differ by a fraction of a step, and the few near a posterize, solarize
+    # or equalize level edge can land on the other side
+    d = _timm_diff([A.RandomResizedCrop(96), A.RandomHorizontalFlip(), ra,
+                    A.RandomVerticalFlip()], images, dtype)[0].abs()
+    assert d.mean().item() < 0.6
+    assert (d > 3).float().mean().item() < 2e-3
+
+
+def test_timm_rand_augment_draws_follow_timm(batch):
+    ra = A.TimmRandAugment()                    # n2, p0.5, m9 + N(0, 0.5) clamped to [0, 10]
+    uniform = A.TimmRandAugment("rand-m8-n1-p1.0-mstd101", interpolation="bicubic")
+    shared = A.TimmRandAugment("rand-m7-n1", same_on_batch=True)
+    pipe = A.Compose([A.Resize((40, 50)), ra, uniform, shared])
+    torch.manual_seed(0)
+    _, params = pipe._run(batch.repeat(500, 1, 1, 1), "chw")
+    for step in ra._children():
+        k = pipe._b.k(step)
+        on = params[:, k] >= 0
+        assert abs(on.float().mean().item() - 0.5) < 0.03
+        counts = torch.bincount(params[on, k].long(), minlength=15).float() / on.sum()
+        assert (counts - 1 / 15).abs().max() < 0.02
+        m = params[:, k + 1]
+        assert m.max().item() == 10.0 and abs(m.mean().item() - 9.0) < 0.03
+        assert abs(m.std().item() - 0.49) < 0.03
+        assert abs((params[:, k + 2] < 0).float().mean().item() - 0.5) < 0.03
+        assert abs(params[:, k + 3].mean().item() - 0.5) < 0.03     # bilinear or bicubic
+    k = pipe._b.k(uniform._children()[0])
+    m = params[:, k + 1]
+    assert m.min().item() >= 0 and m.max().item() <= 8 and abs(m.mean().item() - 4.0) < 0.15
+    assert torch.all(params[:, k] >= 0) and torch.all(params[:, k + 3] == 1)
+    k = pipe._b.k(shared._children()[0])
+    assert torch.all(params[:, k:k + 11] == params[0, k:k + 11]) and params[0, k + 1].item() == 7.0

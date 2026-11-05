@@ -20,6 +20,11 @@ float gray(float4 c) { return 0.2989 * c.x + 0.587 * c.y + 0.114 * c.z; }
 
 float4 clamp01(float4 c) { return clamp(c, 0.0, 1.0); }
 
+// torchvision's float -> uint8 conversion (to_dtype_image, scale=True):
+// value * 255.999 truncated. Clamped here; torchvision's cast of a value
+// outside [0, 1] (bicubic overshoot) is undefined and in practice wraps.
+int q255(float v) { return clamp(int(v * 255.999), 0, 255); }
+
 // The bfloat16 bit pattern of f, rounded to nearest even like torch's
 // .to(torch.bfloat16); NaN stays NaN.
 int16_t bf16_bits(float f)
@@ -49,6 +54,14 @@ float rnd(inout uint s)
 float urand(inout uint s, float lo, float hi) { return lo + (hi - lo) * rnd(s); }
 
 int irand(inout uint s, int n) { return min(int(rnd(s) * float(n)), n - 1); }
+
+// a standard normal value (Box-Muller)
+float nrand(inout uint s)
+{
+    float u1 = max(rnd(s), 1e-7);
+    float u2 = rnd(s);
+    return sqrt(-2.0 * log(u1)) * cos(6.2831853 * u2);
+}
 
 // Four independent standard normal values for one pixel of image b, keyed by
 // a per-call random key (Box-Muller on counter-based uniforms).

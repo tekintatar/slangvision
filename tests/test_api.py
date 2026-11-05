@@ -100,6 +100,25 @@ def test_rand_augment_builds_one_pass_per_op():
     assert "RandAugment(num_ops=3" in repr(pipe)
 
 
+def test_timm_rand_augment_parses_timm_configs_and_builds_one_pass_per_layer():
+    ra = A.TimmRandAugment()
+    assert (ra.magnitude, ra.num_layers, ra.prob, ra.magnitude_std, ra.increasing) == \
+        (9, 2, 0.5, 0.5, True)
+    ra = A.TimmRandAugment("rand-m7-n3-p0.3-mmax20-mstd101-inc0-mstd1")
+    assert (ra.magnitude, ra.num_layers, ra.prob, ra.magnitude_max, ra.increasing) == \
+        (7, 3, 0.3, 20, False)
+    assert ra.magnitude_std == float("inf")         # above 100: uniform; the first mstd wins
+    assert A.TimmRandAugment("rand-inc-m5").magnitude == 5      # timm skips sections without a number
+    other = A.TimmRandAugment("rand-m9-inc1-inc0-mmax0-p1.5")
+    assert (other.increasing, other.magnitude_max, other.prob) == (False, 10, 1.5)  # current timm
+    pipe = A.Compose([A.RandomResizedCrop(224), A.RandomHorizontalFlip(), ra,
+                      A.Normalize(MEAN, STD)])
+    assert "stage_3" in pipe.source and "stage_4" not in pipe.source
+    assert [kind for kind, _, _ in pipe._b.stat_groups] == ["mean_pil", "minmax", "lut"] * 3
+    assert "TimmRandAugment('rand-m7-n3" in repr(pipe)
+    assert "stage_0" in A.Compose([A.TimmRandAugment("rand-n0")]).source
+
+
 @pytest.mark.parametrize("make, match", [
     (lambda: A.RandomSolarize(128), "0-1 scale"),
     (lambda: A.ColorJitter(brightness=-0.1), "non-negative"),
@@ -167,6 +186,14 @@ def test_rand_augment_builds_one_pass_per_op():
     (lambda: A.RandAugment(fill=2.0), "0-1 scale"),
     (lambda: A.RandomApply([A.RandAugment()]), "policies"),
     (lambda: A.Compose([A.RandAugment(), A.RandomResizedCrop(64)]), "must come first"),
+    (lambda: A.TimmRandAugment("augmix-m5"), "start with 'rand'"),
+    (lambda: A.TimmRandAugment("rand-m9-tweights"), "transform sets"),
+    (lambda: A.TimmRandAugment("rand-m9-w0"), "unknown config section"),
+    (lambda: A.TimmRandAugment("rand-m9.5"), "bad value"),
+    (lambda: A.TimmRandAugment(interpolation="nearest"), "random, bilinear or bicubic"),
+    (lambda: A.TimmRandAugment(fill=124), "0-1 scale"),
+    (lambda: A.TimmRandAugment(translate_pct=float("nan")), "finite"),
+    (lambda: A.RandomChoice([A.TimmRandAugment()]), "policies"),
     (lambda: A.RandomPosterize(4.0), "bits"),
     (lambda: A.RandomAdjustSharpness(-1.0), "non-negative"),
     (lambda: A.RandomEqualize(p=1.5), "p must be in"),

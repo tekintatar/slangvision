@@ -53,6 +53,7 @@ from .transforms import (
     RandomSolarize,
     RandomVerticalFlip,
     Resize,
+    TimmRandAugment,
 )
 
 __all__ = [
@@ -88,5 +89,6 @@ __all__ = [
     "RandomSolarize",
     "RandomVerticalFlip",
     "Resize",
+    "TimmRandAugment",
     "Uniform",
 ]

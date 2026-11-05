@@ -38,9 +38,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# torchvision: the reference implementation the tests compare against
-dev = ["pytest", "ruff", "mypy>=1.14", "torchvision"]
-bench = ["torchvision", "kornia"]
+# torchvision and timm: the reference implementations the tests compare against
+dev = ["pytest", "ruff", "mypy>=1.14", "torchvision", "timm"]
+bench = ["torchvision", "kornia", "timm"]
 
 [project.urls]
 Homepage = "https://github.com/tekintatar/slangvision"
@@ -84,5 +84,5 @@ warn_unused_configs = true
 
 [[tool.mypy.overrides]]
 # nvidia: the namespace of NVIDIA's pip wheels (NVRTC), installed with torch
-module = ["torch", "torch.*", "torchvision", "torchvision.*", "nvidia"]
+module = ["torch", "torch.*", "torchvision", "torchvision.*", "timm", "timm.*", "nvidia"]
 ignore_missing_imports = true

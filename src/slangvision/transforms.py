@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import numbers
+import re
 import struct
 from typing import Any, Sequence
 
@@ -794,12 +795,42 @@ def _lin_f32(start: float, end: float, steps: int, i: int) -> float:
     return _f32(e - _f32(step * (steps - i - 1)))
 
 
+class _Policy(Transform):
+    """An augmentation policy: Compose runs each of its steps as a pass."""
+
+    _kind = "policy"
+    _steps: list[Transform]
+
+    def _children(self) -> list[Transform]:
+        return list(self._steps)
+
+
+class _PolicyOp(Transform):
+    """One step of a policy: a pass whose input warps or sharpens (or copies)
+    the previous one, followed by the step's colour ops."""
+
+    _kind = "warp"      # it may warp: flips after it apply after it
+
+    def __init__(self, parent: Any):
+        self.parent = parent
+
+    @property
+    def same_on_batch(self) -> bool:     # type: ignore[override]
+        return bool(self.parent.same_on_batch)
+
+    def _pre(self, b: Binding) -> list[str] | None:
+        return None
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(of {self.parent!r})"
+
+
 # torchvision's RandAugment ops, in its order (index = the op's code below)
 _RA_OPS = ("Identity", "ShearX", "ShearY", "TranslateX", "TranslateY", "Rotate", "Brightness",
            "Color", "Contrast", "Sharpness", "Posterize", "Solarize", "AutoContrast", "Equalize")
 
 
-class RandAugment(Transform):
+class RandAugment(_Policy):
     """torchvision RandAugment: ``num_ops`` times per image, one of 14 ops
     (identity, shear, translate, rotate, brightness, colour, contrast,
     sharpness, posterize, solarize, autocontrast, equalize) chosen uniformly,
@@ -810,8 +841,6 @@ class RandAugment(Transform):
     otherwise one or three values on the 0-1 scale. Colour ops follow
     torchvision's float behaviour (posterize to ``floor(value * 2**bits) /
     2**bits``)."""
-
-    _kind = "policy"
 
     def __init__(self, num_ops: int = 2, magnitude: int = 9, num_magnitude_bins: int = 31,
                  interpolation: Any = "nearest", fill: Any = None, same_on_batch: bool = False):
@@ -834,9 +863,6 @@ class RandAugment(Transform):
         self.same_on_batch = bool(same_on_batch)
         self._steps = [_RandAugmentOp(self) for _ in range(self.num_ops)]
 
-    def _children(self) -> list[Transform]:
-        return list(self._steps)
-
     def _value(self, start: float, end: float) -> float:
         return _lin_f32(start, end, self.num_magnitude_bins, self.magnitude)
 
@@ -846,28 +872,17 @@ class RandAugment(Transform):
                 f"interpolation={self.interpolation!r}, fill={self.fill})")
 
 
-class _RandAugmentOp(Transform):
-    """One of RandAugment's ops: a pass whose input warps or sharpens (or
-    copies) the previous one, then its colour ops. Slots: the op code, the
-    sign (+-1), the eight warp coefficients of shaders/warp.slang."""
+class _RandAugmentOp(_PolicyOp):
+    """One of RandAugment's ops. Slots: the op code, the sign (+-1), the
+    eight warp coefficients of shaders/warp.slang."""
 
-    _kind = "warp"      # it may warp: flips after it apply after it
-
-    def __init__(self, parent: RandAugment):
-        self.parent = parent
-
-    @property
-    def same_on_batch(self) -> bool:     # type: ignore[override]
-        return self.parent.same_on_batch
+    parent: RandAugment
 
     def _slot_count(self) -> int:
         return 10
 
     def _stat_layout(self) -> list[tuple[str, int]]:
         return [("mean", 1), ("minmax", 6), ("lut", 768)]      # contrast, autocontrast, equalize
-
-    def _pre(self, b: Binding) -> list[str] | None:
-        return None
 
     def _sample(self, b: Binding, rng: str) -> list[str]:
         ra, k = self.parent, b.k(self)
@@ -929,8 +944,176 @@ class _RandAugmentOp(Transform):
                 f"  if (op == 13) {{ {stop(lut)} c = equalize(c, st, b, {lut}); }}",
                 "}"]
 
+
+# timm's RandAugment ops, in its order (index = the op's code below); with
+# inc1, Posterize, Solarize, Color, Contrast, Brightness and Sharpness are
+# its *Increasing variants
+_TIMM_RA_OPS = ("AutoContrast", "Equalize", "Invert", "Rotate", "Posterize", "Solarize",
+                "SolarizeAdd", "Color", "Contrast", "Brightness", "Sharpness", "ShearX", "ShearY",
+                "TranslateXRel", "TranslateYRel")
+# the fill timm's create_transform gives its ops: the ImageNet mean as uint8
+_TIMM_FILL = (124 / 255, 116 / 255, 104 / 255)
+
+
+class TimmRandAugment(_Policy):
+    """timm's RandAugment (``timm.data.rand_augment_transform``), the one
+    DeiT, ConvNeXt, Swin and most timm training recipes use, from timm's
+    config string: ``"rand-m9-mstd0.5-inc1"`` (the default) picks 2 ops per
+    image (``n``) from 15, uniformly with repeats, applies each with
+    probability ``p`` (0.5) at magnitude ``m`` plus Gaussian noise of
+    standard deviation ``mstd`` (above 100: uniform in [0, m]), clamped to
+    [0, ``mmax``] (10); ``inc1`` uses the ops whose strength grows with the
+    magnitude. Transform sets (``t...``) are not supported.
+
+    The ops are Pillow's, as timm runs them: rotate, shear and translate
+    resample like ``Image.transform`` (bilinear or Pillow's bicubic,
+    ``interpolation="random"`` picking one per op as timm's default does)
+    and fill with ``fill`` (default: the ImageNet mean that
+    ``create_transform`` passes, (124, 116, 104) / 255). Values stay floats
+    between ops: the uint8 rounding after each Pillow op is dropped, while
+    posterize, solarize and equalize act on the value as uint8."""
+
+    def __init__(self, config: str = "rand-m9-mstd0.5-inc1", interpolation: Any = "random",
+                 fill: Any = _TIMM_FILL, translate_pct: float = 0.45,
+                 same_on_batch: bool = False):
+        self.config = str(config)
+        self.magnitude, self.num_layers, self.prob = 10, 2, 0.5
+        self.magnitude_std, self.magnitude_max, self.increasing = 0.0, 10, False
+        self._parse(self.config)
+        mode = str(getattr(interpolation, "value", interpolation)).lower()
+        if mode not in ("random", "bilinear", "bicubic"):
+            raise ValueError("TimmRandAugment: interpolation must be random, bilinear or "
+                             f"bicubic (Pillow's), got {interpolation!r}")
+        self.interpolation = mode
+        self.fill = _fill3(fill, "TimmRandAugment")
+        self.translate_pct = float(translate_pct)
+        if not math.isfinite(self.translate_pct):
+            raise ValueError(f"TimmRandAugment: translate_pct must be finite, got {translate_pct}")
+        self.same_on_batch = bool(same_on_batch)
+        self._steps = [_TimmRandAugmentOp(self) for _ in range(self.num_layers)]
+
+    def _parse(self, config: str) -> None:
+        """Current timm's rand_augment_transform parsing: sections without a
+        number are skipped, the first mstd and mmax win, mmax0 means 10 and
+        inc0 means off (timm releases before its August 2026 fix read inc0 as
+        on)."""
+        sections = config.split("-")
+        if sections[0] != "rand":
+            raise ValueError(f"TimmRandAugment: config must start with 'rand', got {config!r}")
+        convert = {"mstd": float, "mmax": int, "inc": int, "m": int, "n": int, "p": float}
+        values: dict[str, Any] = {}
+        for c in sections[1:]:
+            if c.startswith("t"):
+                raise ValueError(f"TimmRandAugment: transform sets ({c!r}) are not supported")
+            cs = re.split(r"(\d.*)", c)
+            if len(cs) < 2:
+                continue
+            key, val = cs[:2]
+            if key not in convert:
+                raise ValueError(f"TimmRandAugment: unknown config section {c!r}")
+            try:
+                v = convert[key](val)
+            except ValueError:
+                raise ValueError(f"TimmRandAugment: bad value in config section {c!r}") from None
+            if key not in ("mstd", "mmax") or key not in values:
+                values[key] = v
+        self.magnitude = values.get("m", self.magnitude)
+        self.num_layers = values.get("n", self.num_layers)
+        self.prob = values.get("p", self.prob)          # above 1 always applies, as in timm
+        self.increasing = bool(values.get("inc", 0))
+        std = values.get("mstd", 0.0)
+        self.magnitude_std = math.inf if std > 100 else std
+        self.magnitude_max = values.get("mmax", 0) or 10
+        if self.num_layers < 0:
+            raise ValueError(f"TimmRandAugment: n must be non-negative, got {self.num_layers}")
+
     def __repr__(self) -> str:
-        return f"_RandAugmentOp(of {self.parent!r})"
+        return (f"TimmRandAugment({self.config!r}, interpolation={self.interpolation!r}, "
+                f"fill={self.fill}, translate_pct={self.translate_pct})")
+
+
+class _TimmRandAugmentOp(_PolicyOp):
+    """One of timm's RandAugment layers. Slots: the op code if applied (else
+    -1), the magnitude, the sign (+-1), bicubic (1) or bilinear (0), the op's
+    level (degrees, bits, threshold, the amount to add on the 0-255 scale,
+    the factor or the fraction), the six warp coefficients of timm_affine in
+    shaders/pil.slang."""
+
+    parent: TimmRandAugment
+
+    def _slot_count(self) -> int:
+        return 11
+
+    def _stat_layout(self) -> list[tuple[str, int]]:
+        return [("mean_pil", 1), ("minmax", 6), ("lut", 768)]   # contrast, autocontrast, equalize
+
+    def _sample(self, b: Binding, rng: str) -> list[str]:
+        ra, k = self.parent, b.k(self)
+        m = _dlit(ra.magnitude)
+        if ra.magnitude_std == math.inf:
+            draw = f"double(urand({rng}, 0.0, {lit(ra.magnitude)}))"
+        elif ra.magnitude_std > 0:
+            draw = f"double({lit(ra.magnitude)} + {lit(ra.magnitude_std)} * nrand({rng}))"
+        else:
+            draw = m
+        upper = _dlit(ra.magnitude_max)
+        bicubic = {"random": f"rnd({rng}) < 0.5 ? 1 : 0", "bicubic": "1", "bilinear": "0"}
+        inc = int(ra.increasing)
+        return [
+            "{",
+            f"    int op = irand({rng}, {len(_TIMM_RA_OPS)});",
+            f"    bool on = rnd({rng}) < {lit(ra.prob)};",
+            # timm clamps max(0, min(m, upper)) in double; the level uses the stored float32
+            f"    float mf = float(max(0.0l, min({draw}, {upper})));",
+            "    double lv = double(mf) / 10.0l;",
+            f"    double sd = rnd({rng}) > 0.5 ? -1.0l : 1.0l;",
+            f"    int bicubic = {bicubic[ra.interpolation]};",
+            "    double a = 0.0l;",
+            "    if (op == 3) a = sd * (lv * 30.0l);",
+            f"    if (op == 4) a = {inc} != 0 ? 4.0l - double(int(lv * 4.0l)) : double(int(lv * 4.0l));",
+            "    if (op == 5) { int t = min(256, int(lv * 256.0l));",
+            f"                   a = double({inc} != 0 ? 256 - t : t); }}",
+            "    if (op == 6) a = double(min(128, int(lv * 110.0l)));",
+            "    if (op >= 7 && op <= 10)",
+            f"        a = {inc} != 0 ? max(0.1l, 1.0l + sd * (lv * 0.9l)) : lv * 1.8l + 0.1l;",
+            "    if (op == 11 || op == 12) a = sd * (lv * 0.3l);",
+            f"    if (op == 13 || op == 14) a = sd * (lv * {_dlit(ra.translate_pct)});",
+            "    double m[6]; timm_affine(op, a, CW, CH, m);",
+            f"    p[uint2({k}, b)] = on ? float(op) : -1.0; p[uint2({k + 1}, b)] = mf;",
+            f"    p[uint2({k + 2}, b)] = float(sd); p[uint2({k + 3}, b)] = float(bicubic);",
+            f"    p[uint2({k + 4}, b)] = float(a);",
+            f"    for (int i = 0; i < 6; ++i) p[uint2({k + 5} + i, b)] = float(m[i]);",
+            "}"]
+
+    def _input(self, b: Binding) -> list[str]:
+        ra, k = self.parent, b.k(self)
+        f0, f1, f2 = (lit(v) for v in ra.fill)
+        return [f"int op = int({P(k)});",
+                "MidImage img = { src, b, OW, OH, 1 };",
+                # ImageEnhance.Sharpness blends toward the 3x3 smoothing by the factor
+                f"if (op == 10) return sharpen(img, x, y, 1.0 - {P(k + 4)});",
+                "if (op != 3 && op < 11) return load_mid(src, x, y, b);",
+                "float fx = float(x); float fy = float(y);",
+                f"float u = {P(k + 5)} * fx + {P(k + 6)} * fy + {P(k + 7)};",
+                f"float v = {P(k + 8)} * fx + {P(k + 9)} * fy + {P(k + 10)};",
+                f"return pil_sample(img, u, v, int({P(k + 3)}), float4({f0}, {f1}, {f2}, 0.0));"]
+
+    def _post(self, b: Binding) -> list[str]:
+        k = b.k(self)
+        mean, minmax, lut = b.stats(self)
+        a = P(k + 4)
+        mm = ", ".join(ST(minmax + i) for i in range(6))
+        return [f"{{ int op = int({P(k)});",
+                f"  if (op == 0) {{ {stop(minmax)} c = autocontrast(c, {mm}); }}",
+                f"  if (op == 1) {{ {stop(lut)} c = equalize(c, st, b, {lut}); }}",
+                "  if (op == 2) c = invert(c);",
+                f"  if (op == 4) c = posterize_pil(c, int({a}));",
+                f"  if (op == 5) c = solarize_pil(c, int({a}));",
+                f"  if (op == 6) c = solarize_add(c, {a} * (1.0 / 255.0));",
+                f"  if (op == 7) c = color_pil(c, {a});",
+                f"  if (op == 8) {{ {stop(mean)} c = contrast(c, {a}, {ST(mean)}); }}",
+                f"  if (op == 9) c = brightness(c, {a});",
+                "}"]
 
 
 # --------------------------------------------------------------- others
