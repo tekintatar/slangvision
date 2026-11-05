@@ -50,6 +50,11 @@ pip install slangvision
 python -m slangvision setup     # once per environment
 ```
 
+This page describes `main`, which has transforms not yet released on PyPI
+(see the [changelog](https://github.com/tekintatar/slangvision/blob/main/CHANGELOG.md)).
+For them, install from GitHub:
+`pip install git+https://github.com/tekintatar/slangvision`.
+
 No CUDA Toolkit or environment variables are needed. SlangVision compiles
 its kernels at run time with NVRTC, CUDA's run-time compiler, and uses the
 copy that pip installs with PyTorch. SlangPy only finds NVRTC under a name
@@ -172,7 +177,7 @@ train = A.Compose([A.RandomResizedCrop(224), A.RandomHorizontalFlip(), RandomGam
 ```
 
 `apply` gets the pixel and one value per parameter, drawn per image. Ops that
-read neighbouring pixels (blurs, filters) subclass `A.NeighbourhoodOp` the
+read neighbouring pixels (blurs, filters) subclass `A.NeighborhoodOp` the
 same way. `slangvision.testing.max_reference_error(pipe, images)` checks a
 pipeline against torchvision and your references, and `pipe.source` shows the
 generated Slang.

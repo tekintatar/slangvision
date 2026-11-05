@@ -7,7 +7,7 @@
 The pipeline runs on the GPU as usual; then each image's sampled random
 values (crop box, flip, jitter factors and order, ...) are replayed through
 torchvision's functional API for the built-in transforms, and through the
-``reference`` method of each ColorOp or NeighbourhoodOp you define. Needs
+``reference`` method of each ColorOp or NeighborhoodOp you define. Needs
 torchvision. TimmRandAugment is replayed through timm's own Pillow ops (needs
 timm) on the image rounded to uint8, as timm sees it, so it differs by
 Pillow's uint8 rounding: about 1/255 per op. Training never imports this
@@ -292,7 +292,7 @@ def _pad(F: Any, img: "torch.Tensor", padding: list[int], t: Any) -> "torch.Tens
 def usm_sharp_reference(x: "torch.Tensor", usm: Any, weight: float = 0.5,
                         threshold: float = 10) -> "torch.Tensor":
     """BasicSR's USMSharp.forward (basicsr/utils/img_process_util.py,
-    Apache-2.0) for the slangvision.USMSharp ``usm``: its 2D kernel (the
+    Apache-2.0) for the slangvision.sr.USMSharp ``usm``: its 2D kernel (the
     float64 outer product rounded to float32), filter2D's reflect padding and
     conv2d, here in float32 with TF32 off (PyTorch's default lets cuDNN use
     TF32, which BasicSR's own result then carries)."""

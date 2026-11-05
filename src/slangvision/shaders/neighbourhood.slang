@@ -1,5 +1,5 @@
 // shaders/neighbourhood.slang — what ops that read neighbouring pixels see
-// (GaussianBlur, sharpness and user NeighbourhoodOps): the IImage accessor,
+// (GaussianBlur, sharpness and user NeighborhoodOps): the IImage accessor,
 // border handling, the Gaussian weight and torchvision's sharpness.
 
 // Neighbourhood ops read the previous pass's output through this accessor;

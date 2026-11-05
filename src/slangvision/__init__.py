@@ -15,7 +15,7 @@ images of any sizes. Names, parameters and results follow
 ``torchvision.transforms.v2`` on float images, but random values are drawn
 for every image (``same_on_batch=True`` shares them across the batch).
 Each pipeline compiles into a few generated Slang kernels. Add your own ops
-with :class:`ColorOp` and :class:`NeighbourhoodOp`. Needs PyTorch with CUDA.
+with :class:`ColorOp` and :class:`NeighborhoodOp`. Needs PyTorch with CUDA.
 See docs/GUIDE.md.
 """
 
@@ -25,10 +25,9 @@ __version__ = "0.1.0"
 # libraries before SlangPy, SlangPy crashes creating its CUDA device, so
 # importing slangvision first must be enough.
 from . import _runtime  # noqa: F401
-from ._base import Choice, ColorOp, NeighbourhoodOp, Uniform
+from ._base import Choice, ColorOp, NeighborhoodOp, NeighbourhoodOp, Uniform
 from ._compile import Compose
 from .mixing import CutMix, MixUp, TimmMixup
-from .sr import USMSharp
 from .transforms import (
     AutoAugment,
     CenterCrop,
@@ -76,6 +75,7 @@ __all__ = [
     "GaussianNoise",
     "Grayscale",
     "MixUp",
+    "NeighborhoodOp",
     "NeighbourhoodOp",
     "Normalize",
     "Pad",
@@ -104,5 +104,4 @@ __all__ = [
     "TimmRandAugment",
     "TrivialAugmentWide",
     "Uniform",
-    "USMSharp",
 ]

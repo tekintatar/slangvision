@@ -40,7 +40,7 @@ Linux NVIDIA host with the scripts in `scripts/cuda_box/`.
 ## Adding a transform
 
 1. **Match torchvision's float functional image by image.** Write it as a
-   `ColorOp` or `NeighbourhoodOp` (the public custom-op API) where it fits;
+   `ColorOp` or `NeighborhoodOp` (the public custom-op API) where it fits;
    its Slang functions go in the matching file in `src/slangvision/shaders/`
    (a new topic gets a new file; every `.slang` file there is loaded).
    Follow the CUDA hot-loop rules in AGENTS.md (no float3/float2).
@@ -49,8 +49,9 @@ Linux NVIDIA host with the scripts in `scripts/cuda_box/`.
 3. **Test it on CUDA** in `tests/test_pipelines.py` through
    `slangvision.testing.max_reference_error`; argument and pipeline-rule checks that
    need no GPU go in `tests/test_api.py`.
-4. **Document it** in the transform table of [docs/GUIDE.md](docs/GUIDE.md)
-   and in [docs/TESTING.md](docs/TESTING.md).
+4. **Document it** in the transform table of [docs/GUIDE.md](docs/GUIDE.md),
+   the transform list in [README.md](README.md) and
+   [docs/TESTING.md](docs/TESTING.md).
 
 ## Releasing
 
@@ -59,8 +60,10 @@ Maintainers release by setting the version in `pyproject.toml`,
 entries under a dated version heading, and pushing a `vX.Y.Z` tag on `main`.
 The `publish` workflow checks that the tag matches the package version,
 builds the archives and uploads them to PyPI through trusted publishing (no
-stored token). Run the CUDA tests on real hardware before tagging; CI
-cannot. `twine check` does not render Markdown, so keep README links
+stored token). CI cannot run the CUDA tests, so before tagging run the
+full suite on real hardware against the commit you will tag and add its
+validation record (commit, GPU, driver, versions, result) to
+[docs/TESTING.md](docs/TESTING.md); do not tag a commit without one. `twine check` does not render Markdown, so keep README links
 absolute: relative links break on PyPI.
 
 ## Pull requests

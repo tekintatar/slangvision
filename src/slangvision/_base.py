@@ -1,6 +1,6 @@
 # slangvision/_base.py — building blocks shared by every transform: random
 # distributions, the parameter-slot binding, and the two public op base
-# classes (ColorOp, NeighbourhoodOp).
+# classes (ColorOp, NeighborhoodOp).
 #
 # How a transform takes part in a pipeline. Compose gives every transform a
 # few slots in a per-image parameter table (one row of floats per image) and,
@@ -201,7 +201,7 @@ class Transform:
 
 
 class _UserOp(Transform):
-    """Shared parts of ColorOp and NeighbourhoodOp."""
+    """Shared parts of ColorOp and NeighborhoodOp."""
 
     # read-only default, so ops that forget to define their own cannot share
     # one mutable dict; p and same_on_batch default even without super().__init__
@@ -310,7 +310,7 @@ class ColorOp(_UserOp):
         return [f"if ({flag}) {call}" if flag else call]
 
 
-class NeighbourhoodOp(_UserOp):
+class NeighborhoodOp(_UserOp):
     """An op that reads neighbouring pixels, which you define.
 
     Set ``slang`` to Slang source that defines::
@@ -347,3 +347,7 @@ class NeighbourhoodOp(_UserOp):
     def _pre(self, b: Binding) -> list[str] | None:
         """Body of an optional pre-pass (separable ops); None for single-pass ops."""
         return None
+
+
+#: the 0.1.0 name, kept as an alias
+NeighbourhoodOp = NeighborhoodOp

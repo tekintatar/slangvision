@@ -28,7 +28,8 @@
   clipped), new noise per pixel, channel and image from SlangVision's own
   generator; a colour op, so statistics after it (equalize, autocontrast)
   see the same noise. +0.16 ms on the ImageNet recipe (batch 256, RTX PRO
-  4500). `max_reference_error` returns NaN for pipelines with noise.
+  4500). `same_on_batch=True` gives every image the same noise.
+  `max_reference_error` returns NaN for pipelines with noise.
 - `TrivialAugmentWide` and `AutoAugment` (torchvision's, with the ImageNet,
   CIFAR10 and SVHN policies), drawn per image on the same op pass as
   `RandAugment`: 1.9 and 3.1 ms per batch of 256 after a crop and flip (RTX
@@ -88,6 +89,11 @@
   bits through an int16 view of the output.
 
 ### Changed
+- `NeighborhoodOp` is the name of the custom neighbourhood-op class, spelt
+  like `ColorOp` and `Grayscale`; `NeighbourhoodOp` stays as an alias.
+- Clearer errors: a resize or crop after other transforms names the
+  transform it follows; a torchvision transform (`ToImage`, `ToDtype`, ...)
+  or a nested `Compose` in a pipeline says what to do instead.
 - `Compose` is fixed when it is built: `transforms` is a tuple and the
   generated Slang comes from the transforms as they were then. Changing a
   transform afterwards could make two ops share a parameter slot (or, for

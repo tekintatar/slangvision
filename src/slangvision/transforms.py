@@ -1534,10 +1534,13 @@ class GaussianNoise(Transform):
     """torchvision GaussianNoise: adds ``mean + sigma * N(0, 1)`` to every
     value, new noise for every pixel, channel and image, then clamps to [0, 1]
     with ``clip=True``. A colour op (before Normalize); the noise comes from
-    SlangVision's own generator, so it differs from torch's."""
+    SlangVision's own generator, so it differs from torch's.
+    ``same_on_batch=True`` adds the same noise field to every image."""
 
-    def __init__(self, mean: float = 0.0, sigma: float = 0.1, clip: bool = True):
+    def __init__(self, mean: float = 0.0, sigma: float = 0.1, clip: bool = True,
+                 same_on_batch: bool = False):
         self.mean, self.sigma, self.clip = float(mean), float(sigma), bool(clip)
+        self.same_on_batch = bool(same_on_batch)
         if not math.isfinite(self.mean):
             raise ValueError(f"GaussianNoise: mean must be finite, got {mean}")
         if not (math.isfinite(self.sigma) and self.sigma >= 0):
@@ -1552,12 +1555,14 @@ class GaussianNoise(Transform):
                 "// 24 bits: exact in a float"]
 
     def _apply(self, b: Binding) -> list[str]:
-        noise = f"normal4(uint({P(b.k(self))}), b, x, y)"
+        image = "0" if self.same_on_batch else "b"
+        noise = f"normal4(uint({P(b.k(self))}), {image}, x, y)"
         c = f"c + ({lit(self.mean)} + {lit(self.sigma)} * {noise})"
         return [f"c = clamp01({c});" if self.clip else f"c = {c};"]
 
     def __repr__(self) -> str:
-        return f"GaussianNoise(mean={self.mean}, sigma={self.sigma}, clip={self.clip})"
+        return (f"GaussianNoise(mean={self.mean}, sigma={self.sigma}, clip={self.clip}, "
+                f"same_on_batch={self.same_on_batch})")
 
 
 # --------------------------------------------------------------- erasing

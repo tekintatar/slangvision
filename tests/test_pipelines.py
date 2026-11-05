@@ -268,7 +268,7 @@ class Gamma(A.ColorOp):
         return (gain * img.pow(gamma)).clamp(0, 1)
 
 
-class BoxBlur(A.NeighbourhoodOp):
+class BoxBlur(A.NeighborhoodOp):
     params = {"r": A.Choice([1, 2, 3])}
     slang = """
     float4 apply<I : IImage>(I img, int x, int y, float r)
@@ -651,7 +651,7 @@ def test_flips_and_jitter_around_a_warp_match_torchvision(images):
 
 
 def test_flips_between_warps_and_after_your_neighbourhood_op_match_torchvision(images):
-    # a flip after your NeighbourhoodOp is allowed once a warp comes between them
+    # a flip after your NeighborhoodOp is allowed once a warp comes between them
     _check([A.RandomResizedCrop(64), BoxBlur(), A.RandomRotation(20, interpolation="bilinear"),
             A.RandomHorizontalFlip(), A.RandomPerspective(p=0.8), A.RandomVerticalFlip(),
             A.RandomHorizontalFlip()], images)
@@ -1083,7 +1083,7 @@ def test_statistics_after_gaussian_noise_see_the_same_noise(batch):
 
 # --------------------------------------------------------- super resolution
 @pytest.mark.parametrize("usm, weight, threshold", [
-    (A.USMSharp(), 0.5, 10), (A.USMSharp(radius=7), 0.5, 10), (A.USMSharp(21, sigma=3.0), 1.0, 4),
+    (sr.USMSharp(), 0.5, 10), (sr.USMSharp(radius=7), 0.5, 10), (sr.USMSharp(21, sigma=3.0), 1.0, 4),
 ], ids=repr)
 def test_usm_sharp_matches_basicsr(usm, weight, threshold, batch):
     x = batch.float() / 255.0
@@ -1105,10 +1105,10 @@ def test_usm_sharp_matches_basicsr(usm, weight, threshold, batch):
 
 def test_usm_sharp_input_errors(batch):
     with pytest.raises(ValueError, match="larger than 25"):
-        A.USMSharp()(batch[:, :, :25, :40].float())
+        sr.USMSharp()(batch[:, :, :25, :40].float())
     with pytest.raises(ValueError, match="float16, bfloat16 or float32"):
-        A.USMSharp()(batch)
-    assert A.USMSharp()(batch[:0].float()).shape == (0, 3, 96, 128)
+        sr.USMSharp()(batch)
+    assert sr.USMSharp()(batch[:0].float()).shape == (0, 3, 96, 128)
 
 
 def test_gaussian_noise_pt_follows_basicsr_draws():
@@ -1207,7 +1207,7 @@ def test_fractional_gray_noise_blends_like_basicsr():
 
 def test_usm_sharp_takes_basicsr_radii():
     np = pytest.importorskip("numpy")
-    assert A.USMSharp(np.int64(50)).size == 51 and A.USMSharp(0).size == 1
+    assert sr.USMSharp(np.int64(50)).size == 51 and sr.USMSharp(0).size == 1
 
 
 def _jpeg_close(out, ref, mean=1e-6, frac=2e-3, big=1e-5):
@@ -1371,3 +1371,11 @@ def test_stand_alone_kernels_take_tensors_that_require_grad():
         assert out.shape == x.shape and not out.requires_grad, name
         with pytest.raises(NotImplementedError, match="no gradients"):
             call(x)
+
+
+def test_gaussian_noise_same_on_batch_adds_one_field(batch):
+    flat = torch.full_like(batch, 128)
+    out = A.Compose([A.GaussianNoise(sigma=0.1, same_on_batch=True)], dtype=torch.float32)(flat)
+    assert torch.equal(out, out[:1].expand_as(out)) and out.std().item() > 0.05
+    free = A.Compose([A.GaussianNoise(sigma=0.1)], dtype=torch.float32)(flat)
+    assert not torch.equal(free[0], free[1])

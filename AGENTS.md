@@ -29,7 +29,7 @@ notes (interpreter paths, GPU hosts, identities) in your own untracked
   them. Inspect generated code with `Compose.source`.
 - `src/slangvision/_base.py` — distributions (`Uniform`, `Choice`), the
   parameter-slot binding and the public custom-op bases `ColorOp` and
-  `NeighbourhoodOp`.
+  `NeighborhoodOp`.
 - `src/slangvision/transforms.py` — the built-in transforms.
 - `src/slangvision/testing.py` — torch/torchvision references and
   `max_reference_error`; never imported by training.

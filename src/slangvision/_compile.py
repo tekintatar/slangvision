@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Sequence
 
-from ._base import P, Binding, NeighbourhoodOp, Transform, _UserOp, lit
+from ._base import P, Binding, NeighborhoodOp, Transform, _UserOp, lit
 from .transforms import (AutoAugment, CenterCrop, ColorJitter, GaussianBlur, GaussianNoise,
                          Grayscale, Normalize, Pad, RandAugment, RandomAdjustSharpness,
                          RandomAffine, RandomApply, RandomAutocontrast, RandomChannelPermutation,
@@ -165,9 +165,19 @@ def _expand(transforms: Sequence[Transform]) -> list[Transform]:
 
 def _walk(transforms: Sequence[Transform]):
     for t in _expand(transforms):
+        if isinstance(t, Compose):
+            raise TypeError("Compose takes transforms, not another Compose: flatten it, "
+                            "Compose([*a.transforms, *b.transforms])")
+        if type(t).__module__.split(".")[0] == "torchvision":
+            raise TypeError(
+                f"Compose takes slangvision transforms, not torchvision's "
+                f"{type(t).__name__}: images go in as uint8 tensors (drop ToImage, "
+                "PILToTensor, ToTensor), the output dtype is Compose(dtype=...) (drop ToDtype, "
+                "ConvertImageDtype), and the augmentations have slangvision counterparts of "
+                "the same names")
         if not isinstance(t, (_BUILT_IN, _UserOp, _PolicyOp)):
             raise TypeError(f"Compose takes slangvision transforms; define your own "
-                            f"with ColorOp or NeighbourhoodOp, got {t!r}")
+                            f"with ColorOp or NeighborhoodOp, got {t!r}")
         yield t
         yield from _walk(t._children())
 
@@ -240,24 +250,28 @@ class Compose:
         self._normalize: Normalize | None = None
         self._erasing: list[RandomErasing] = []
         user_neighbourhood = False
+        first_other: Transform | None = None     # the first transform that isn't geometry
         for t in _expand(self.transforms):
             kind = t._kind
+            if kind != "geometry" and first_other is None:
+                first_other = t
             if self._erasing and kind != "erase":
                 raise ValueError("RandomErasing must come last (after Normalize)")
             if self._normalize is not None and kind != "erase":
                 raise ValueError("Normalize must come after every transform except "
                                  "RandomErasing")
             if kind == "geometry":
-                if self._flips or self._neighbourhood or any(self._stages):
-                    raise ValueError(f"{t!r}: resizes, crops and pads must come first (warps "
-                                     "work on the image after them)")
+                if first_other is not None:
+                    raise ValueError(f"{t!r} comes after {first_other!r}: resizes, crops and "
+                                     "pads must come first, before flips, warps and colour ops; "
+                                     "move it to the front")
                 if getattr(t, "_resamples", False) and geometry:
                     raise ValueError(f"{t!r}: one Resize or RandomResizedCrop per pipeline, "
                                      "and it must be the first transform")
                 geometry.append(t)
             elif kind == "flip":
                 if user_neighbourhood:
-                    raise ValueError(f"{t!r} must come before your NeighbourhoodOps")
+                    raise ValueError(f"{t!r} must come before your NeighborhoodOps")
                 # a flip after a warp mirrors the warp's output coordinates;
                 # it commutes with everything else
                 self._flips.append(t)
@@ -268,7 +282,7 @@ class Compose:
                 self._neighbourhood.append(t)
                 # its _post lines (a container's colour ops) start the next pass's chain
                 self._stages.append([t])
-                user_neighbourhood |= isinstance(_unwrap(t)[1], NeighbourhoodOp)
+                user_neighbourhood |= isinstance(_unwrap(t)[1], NeighborhoodOp)
             elif kind == "warp":
                 self._neighbourhood.append(t)
                 self._stages.append([t])

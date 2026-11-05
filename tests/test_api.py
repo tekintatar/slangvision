@@ -12,7 +12,7 @@ import slangvision as A
 MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 
 
-class Box(A.NeighbourhoodOp):
+class Box(A.NeighborhoodOp):
     slang = "float4 apply<I : IImage>(I img, int x, int y) { return img.load(x + 1, y); }"
 
 
@@ -27,13 +27,13 @@ class Box(A.NeighbourhoodOp):
     ([A.Normalize(MEAN, STD), A.ColorJitter(0.4)], "Normalize must come after every transform"),
     ([A.RandomErasing(), A.Normalize(MEAN, STD)], "RandomErasing must come last"),
     ([A.RandomErasing(), A.ColorJitter(0.4)], "RandomErasing must come last"),
-    ([A.RandomResizedCrop(64), Box(), A.RandomHorizontalFlip()], "before your NeighbourhoodOps"),
+    ([A.RandomResizedCrop(64), Box(), A.RandomHorizontalFlip()], "before your NeighborhoodOps"),
     ([A.RandomResizedCrop(8), A.GaussianBlur(23)], "larger than its radius"),
     ([A.Resize((64, 6)), A.RandomApply([A.GaussianBlur((13, 3))])], "larger than its radius"),
-    ([A.RandomRotation(10), A.RandomResizedCrop(224)], "warps work on the image after them"),
+    ([A.RandomRotation(10), A.RandomResizedCrop(224)], "comes after RandomRotation"),
     ([A.Resize((64, 64)), A.RandomAffine(5), A.CenterCrop(32)], "must come first"),
     ([A.RandomResizedCrop(64), A.RandomRotation(10), Box(), A.RandomHorizontalFlip()],
-     "before your NeighbourhoodOps"),
+     "before your NeighborhoodOps"),
 ])
 def test_pipeline_structure_errors(transforms, match):
     with pytest.raises(ValueError, match=match):
@@ -78,7 +78,7 @@ def test_warps_start_a_pass_and_take_the_flips_after_them():
     input_1 = src[src.index("float4 input_1"):src.index("float4 input_2")]
     assert f"prm(p, b, {k_h})" in input_0 and f"prm(p, b, {k_v})" not in input_0
     assert f"prm(p, b, {k_v})" in input_1      # after the warp, before the blur: commutes
-    # a flip after your NeighbourhoodOp is fine when a warp follows the op
+    # a flip after your NeighborhoodOp is fine when a warp follows the op
     A.Compose([A.RandomResizedCrop(64), Box(), A.RandomRotation(10), A.RandomHorizontalFlip()])
     A.Compose([A.RandomCrop(32, padding=4), A.RandomHorizontalFlip(),
                A.RandomApply([A.RandomAffine(10, translate=(0.1, 0.1), scale=(0.9, 1.1),
@@ -310,3 +310,18 @@ def test_compose_is_fixed_when_built():
     before = pipe.source
     op.params = {"g": A.Uniform(0.5, 1.5), "h": A.Uniform(0.0, 1.0)}
     assert pipe._source("hwc") == before.replace("source_chw(ptrs", "source_hwc(ptrs")
+
+
+def test_torchvision_objects_get_a_porting_hint():
+    torch = pytest.importorskip("torch")
+    v2 = pytest.importorskip("torchvision.transforms.v2")
+    with pytest.raises(TypeError, match="drop ToDtype"):
+        A.Compose([A.RandomResizedCrop(64), v2.ToDtype(torch.float32, scale=True)])
+    with pytest.raises(TypeError, match="flatten it"):
+        A.Compose([A.Compose([A.RandomResizedCrop(64)]), A.Normalize([0.5], [0.5])])
+
+
+def test_gaussian_noise_same_on_batch_drops_the_image_index():
+    shared = A.Compose([A.GaussianNoise(same_on_batch=True)]).source
+    assert "normal4(uint(prm(p, b, 6)), 0, x, y)" in shared
+    assert ", b, x, y)" in A.Compose([A.GaussianNoise()]).source

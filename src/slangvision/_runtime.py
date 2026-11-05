@@ -149,7 +149,7 @@ def load_module(source: str) -> spy.Module:
         except Exception as e:
             raise RuntimeError("slangvision could not compile this pipeline; "
                                "Compose.source shows the generated Slang (a ColorOp or "
-                               f"NeighbourhoodOp you defined is the usual cause): {e}") from e
+                               f"NeighborhoodOp you defined is the usual cause): {e}") from e
     return _MODULES[key]
 
 

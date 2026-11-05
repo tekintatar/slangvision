@@ -3,7 +3,7 @@
 - **Phase 1** ✅ (2026-11-03, first developed as `slangimage.augment`):
   torchvision-style pipelines compiled into fused Slang kernels, random
   values per image (`same_on_batch` optional), in-place reads of batches or
-  lists of decoded images (CHW/HWC), public `ColorOp`/`NeighbourhoodOp` for
+  lists of decoded images (CHW/HWC), public `ColorOp`/`NeighborhoodOp` for
   custom ops. Transforms: RandomResizedCrop, Resize, CenterCrop,
   RandomHorizontalFlip, ColorJitter, RandomApply, RandomGrayscale,
   GaussianBlur, RandomSolarize, Normalize. CUDA only.
