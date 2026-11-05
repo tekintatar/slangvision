@@ -49,3 +49,14 @@ float rnd(inout uint s)
 float urand(inout uint s, float lo, float hi) { return lo + (hi - lo) * rnd(s); }
 
 int irand(inout uint s, int n) { return min(int(rnd(s) * float(n)), n - 1); }
+
+// Four independent standard normal values for one pixel of image b, keyed by
+// a per-call random key (Box-Muller on counter-based uniforms).
+float4 normal4(uint key, int b, int x, int y)
+{
+    uint s = pcg(key ^ pcg(uint(b) * 2654435769u ^ pcg(uint(x) * 40503u + uint(y) * 2246822519u)));
+    float u1 = max(rnd(s), 1e-7), u2 = rnd(s), u3 = max(rnd(s), 1e-7), u4 = rnd(s);
+    float r1 = sqrt(-2.0 * log(u1)), r2 = sqrt(-2.0 * log(u3));
+    return float4(r1 * cos(6.2831853 * u2), r1 * sin(6.2831853 * u2),
+                  r2 * cos(6.2831853 * u4), r2 * sin(6.2831853 * u4));
+}

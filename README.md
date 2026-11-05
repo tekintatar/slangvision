@@ -94,7 +94,8 @@ versions it saw.
 `RandomResizedCrop`, `Resize`, `CenterCrop`, `RandomCrop`, `Pad`,
 `RandomHorizontalFlip`, `RandomVerticalFlip`, `ColorJitter`,
 `RandomGrayscale`, `GaussianBlur`, `RandomSolarize`, `RandomApply`,
-`RandomChoice` and `Normalize`, with torchvision's names and parameters,
+`RandomChoice`, `Normalize` and `RandomErasing`, with torchvision's names and
+parameters,
 including bilinear or bicubic resizing. Every random transform takes
 `same_on_batch=False`. A SimCLR pipeline:
 
@@ -117,6 +118,18 @@ the output size, and `Normalize` comes last. The
 [guide](https://github.com/tekintatar/slangvision/blob/main/docs/GUIDE.md)
 has the full rules, decoder recipes (torchvision, nvImageCodec, DALI,
 DataLoader), accuracy and limits.
+
+### MixUp and CutMix
+
+```python
+import slangvision as A
+
+mix = A.MixUpCutMix(mixup_alpha=0.8, cutmix_alpha=1.0, label_smoothing=0.1, num_classes=1000)
+# x, y = mix(train(images), labels)       # after the pipeline, on its output batch
+```
+
+`MixUp` and `CutMix` are torchvision's, draw for draw; `MixUpCutMix` is
+timm's `Mixup`, with per-batch, per-pair or per-image mixing.
 
 ## Custom ops
 
@@ -165,7 +178,9 @@ CPU cores, images per second:
 | DALI decode + DALI augmentation | 8,655 | 3,518 |
 | DALI decode + SlangVision | 8,393 | 3,395 |
 
-Moving augmentation to the GPU gives 1.4× (ResNet-18) with CPU decoding.
+Moving augmentation to the GPU gives 1.4× (ResNet-18) with CPU decoding of
+ImageNet-sized photos; with larger ones decode on the GPU too (the guide
+has an FGVC-Aircraft benchmark at about 0.7 MP).
 With DALI's GPU decoding, training runs within about 3% of DALI's own
 augmentation, with torchvision's results instead of DALI's approximations.
 Both tables were measured with the same kernels while they shipped as

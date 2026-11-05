@@ -452,6 +452,130 @@ def test_random_values_follow_torchvision(images):
     assert len(orders) == 24 and min(orders.values()) > 4096 / 24 * 0.7
 
 
+# ------------------------------------------------------------------ erasing
+@pytest.mark.parametrize("transforms", [
+    [A.RandomResizedCrop(64), A.Normalize(MEAN, STD), A.RandomErasing(p=1.0)],
+    [A.RandomResizedCrop(64), A.Normalize(MEAN, STD),
+     A.RandomErasing(p=0.7, scale=(0.1, 0.5), ratio=(0.5, 2.0), value=(0.5, -1.0, 2.0))],
+    [A.RandomResizedCrop(64), A.ColorJitter(0.4), A.RandomErasing(p=1.0, value=0.3)],
+    [A.RandomCrop(32, padding=4), A.Normalize(MEAN, STD), A.RandomErasing(p=1.0),
+     A.RandomErasing(p=1.0, value=1.5)],                                # two boxes, in order
+    [A.RandomResizedCrop(64), A.Normalize(MEAN, STD), A.RandomErasing(p=1.0, value="random")],
+], ids=lambda ts: "+".join(type(t).__name__ for t in ts))
+def test_random_erasing_matches_torchvision(transforms, small):
+    # value="random": the box matches; its noise is checked in the next test
+    _check(transforms, [im for im in small if min(im.shape[-2:]) >= 32])
+
+
+def test_random_erasing_noise_is_standard_normal(batch):
+    erase = A.RandomErasing(p=1.0, scale=(0.3, 0.3), ratio=(1.0, 1.0), value="random")
+    pipe = A.Compose([A.Normalize(MEAN, STD), erase], dtype=torch.float32)
+    torch.manual_seed(0)
+    x = torch.cat([batch] * 16)
+    out, params = pipe._run(x, "chw")
+    k = pipe._b.k(erase)
+    vals, firsts = [], []
+    for i in range(len(x)):
+        top, left, h, w = (int(v) for v in params[i, k + 1:k + 5])
+        box = out[i, :, top:top + h, left:left + w]
+        vals.append(box.reshape(-1))
+        firsts.append(box[:, :4, :4].reshape(-1))
+    v = torch.cat(vals)
+    assert abs(v.mean().item()) < 0.01 and abs(v.std().item() - 1.0) < 0.01
+    assert abs(((v > 1.96).float().mean() - 0.025).item()) < 0.003      # normal tail
+    assert torch.stack(firsts).std(0).min() > 0.5                       # differs per image
+
+
+def test_random_erasing_boxes_follow_torchvision(images):
+    from torchvision.transforms import v2
+
+    erase = A.RandomErasing(p=0.6)
+    pipe = A.Compose([A.CenterCrop((120, 160)), erase])
+    img = images[0]
+    torch.manual_seed(0)
+    _, params = pipe._run([img] * 4096, "chw")
+    k = pipe._b.k(erase)
+    on = params[:, k] > 0.5
+    area = (params[on, k + 3] * params[on, k + 4] / (120 * 160)).mean().item()
+    aspect = torch.log(params[on, k + 3] / params[on, k + 4]).mean().item()
+    tv = v2.RandomErasing(p=1.0)
+    torch.manual_seed(0)
+    boxes = [tv.make_params([torch.zeros(3, 120, 160)]) for _ in range(4096)]
+    boxes = [bx for bx in boxes if bx["v"] is not None]
+    tv_area = sum(bx["h"] * bx["w"] for bx in boxes) / (len(boxes) * 120 * 160)
+    tv_aspect = sum(math.log(bx["h"] / bx["w"]) for bx in boxes) / len(boxes)
+    assert abs(on.float().mean().item() - 0.6) < 0.03
+    assert abs(area - tv_area) < 0.01 and abs(aspect - tv_aspect) < 0.05
+    shared = A.RandomErasing(p=1.0, same_on_batch=True)
+    pipe = A.Compose([A.CenterCrop((120, 160)), shared])
+    _, params = pipe._run([img] * 64, "chw")
+    k = pipe._b.k(shared)
+    assert params[:, k + 1:k + 5].unique(dim=0).shape[0] == 1
+
+
+# ------------------------------------------------------------- mixing
+@pytest.mark.parametrize("cls", ["MixUp", "CutMix"])
+def test_mixup_and_cutmix_match_torchvision(cls, batch):
+    from torchvision.transforms import v2
+
+    x = A.Compose([A.RandomResizedCrop(64), A.Normalize(MEAN, STD)],
+                  dtype=torch.float32)(torch.cat([batch] * 2))
+    labels = torch.arange(12, device="cuda") % 5
+    for seed in range(5):
+        torch.manual_seed(seed)
+        ours = getattr(A, cls)(alpha=1.0, num_classes=5)(x, labels)
+        torch.manual_seed(seed)
+        theirs = getattr(v2, cls)(alpha=1.0, num_classes=5)(x, labels)
+        assert (ours[0] - theirs[0]).abs().max() < 1e-6       # one rounding differs at most
+        assert torch.equal(ours[1], theirs[1])
+
+
+@pytest.mark.parametrize("mode", ["batch", "pair", "elem"])
+def test_timm_style_mixing_follows_its_parameters(mode, batch):
+    x = A.Compose([A.RandomResizedCrop(48), A.Normalize(MEAN, STD)],
+                  dtype=torch.float32)(torch.cat([batch] * 4))
+    labels = torch.arange(24, device="cuda") % 10
+    m = A.MixUpCutMix(mixup_alpha=0.8, cutmix_alpha=1.0, mode=mode, num_classes=10)
+    torch.manual_seed(0)
+    out, y = m(x, labels)
+    torch.manual_seed(0)
+    partner, own, boxes, lam = m._params(*x.shape[:1], *x.shape[2:])
+    ref = x.clone()
+    for i, (j, a, (x1, y1, x2, y2)) in enumerate(zip(partner, own, boxes)):
+        ref[i] = x[i] * a + x[j] * (1 - a)
+        ref[i, :, y1:y2, x1:x2] = x[j, :, y1:y2, x1:x2]
+    assert (out - ref).abs().max() < 1e-5
+    assert torch.allclose(y, m._mix_labels(labels, partner, lam))
+    assert torch.allclose(y.sum(1), torch.ones(24, device="cuda"))
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_mixing_keeps_the_output_dtype(dtype, batch):
+    x32 = A.Compose([A.RandomResizedCrop(32), A.Normalize(MEAN, STD)],
+                    dtype=torch.float32)(batch)
+    x = x32.to(dtype)
+    torch.manual_seed(0)
+    out, _ = A.MixUp(alpha=1.0, num_classes=3)(x, torch.zeros(6, dtype=torch.long, device="cuda"))
+    torch.manual_seed(0)
+    ref, _ = A.MixUp(alpha=1.0, num_classes=3)(x.float(), torch.zeros(6, dtype=torch.long,
+                                                                      device="cuda"))
+    assert out.dtype == dtype
+    assert (out.float() - ref.to(dtype).float()).abs().max() <= 2 * (ref.abs().max() * 2**-7)
+
+
+def test_mixing_input_errors(batch):
+    x = A.Compose([A.RandomResizedCrop(32)])(batch)
+    with pytest.raises(ValueError, match="num_classes"):
+        A.MixUp()(x, torch.zeros(6, dtype=torch.long, device="cuda"))
+    with pytest.raises(ValueError, match="labels"):
+        A.MixUp(num_classes=3)(x, torch.zeros(5, dtype=torch.long, device="cuda"))
+    with pytest.raises(ValueError, match="CUDA"):
+        A.MixUp(num_classes=3)(x.cpu(), torch.zeros(6, dtype=torch.long))
+    empty_x, empty_y = A.CutMix(num_classes=3)(x[:0], torch.zeros(0, dtype=torch.long,
+                                                                device="cuda"))
+    assert empty_x.shape == (0, 3, 32, 32) and empty_y.shape == (0, 3)
+
+
 # ------------------------------------------------------------------ bridges
 def test_python_torch_bridge_is_scoped_to_slangvision(images):
     # with slangpy-torch installed this also compares the two bridges

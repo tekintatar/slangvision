@@ -564,7 +564,7 @@ class RandomChoice(Transform):
 
 
 class Normalize(Transform):
-    """torchvision Normalize; must be the last transform."""
+    """torchvision Normalize; comes after every transform except RandomErasing."""
 
     _kind = "normalize"
 
@@ -578,3 +578,75 @@ class Normalize(Transform):
 
     def __repr__(self) -> str:
         return f"Normalize(mean={self.mean}, std={self.std})"
+
+
+# --------------------------------------------------------------- erasing
+class RandomErasing(Transform):
+    """torchvision RandomErasing: with probability ``p``, fill one box per image
+    with ``value``: a number, one value per channel, or ``"random"`` for
+    per-pixel standard normal noise. The box takes ``scale`` of the image's
+    area at a log-uniform aspect within ``ratio``; after 10 tries that do not
+    fit, the image is left alone. Runs at the end of the pipeline, after
+    Normalize, so ``value`` is in output units, as in torchvision recipes.
+    timm's ``RandomErasing(probability=p, mode="pixel")`` is
+    ``RandomErasing(p, scale=(0.02, 1 / 3), ratio=(0.3, 1 / 0.3), value="random")``.
+    Use several to erase several boxes."""
+
+    _kind = "erase"
+
+    def __init__(self, p: float = 0.5, scale: Sequence[float] = (0.02, 0.33),
+                 ratio: Sequence[float] = (0.3, 3.3), value: Any = 0.0,
+                 same_on_batch: bool = False):
+        self.p = _probability(p)
+        self.scale = (float(scale[0]), float(scale[1]))
+        self.ratio = (float(ratio[0]), float(ratio[1]))
+        if not 0 <= self.scale[0] <= self.scale[1] <= 1:
+            raise ValueError(f"RandomErasing: scale must satisfy 0 <= min <= max <= 1, got {scale}")
+        if not 0 < self.ratio[0] <= self.ratio[1]:
+            raise ValueError(f"RandomErasing: ratio must satisfy 0 < min <= max, got {ratio}")
+        if isinstance(value, str):
+            if value != "random":
+                raise ValueError(f"RandomErasing: a string value must be 'random', got {value!r}")
+            self.value: tuple[float, float, float] | None = None
+        else:
+            vals = [value] if isinstance(value, numbers.Real) else list(value)
+            if len(vals) == 1:
+                vals = vals * 3
+            if len(vals) != 3 or not all(isinstance(v, numbers.Real) and math.isfinite(v)
+                                         for v in vals):
+                raise ValueError("RandomErasing: value is a number, three numbers (RGB) or "
+                                 f"'random', got {value!r}")
+            self.value = (float(vals[0]), float(vals[1]), float(vals[2]))
+        self.same_on_batch = bool(same_on_batch)
+
+    def _slot_count(self) -> int:
+        return 6            # applied, top, left, height, width, noise key
+
+    def _sample(self, b: Binding, rng: str) -> list[str]:
+        k = b.k(self)
+        return [
+            "{",
+            f"    bool on = rnd({rng}) < {lit(self.p)};",
+            "    int et = 0; int el = 0; int eh = 0; int ew = 0;",
+            f"    bool found = sample_box({rng}, CW, CH, {lit(self.scale[0])}, {lit(self.scale[1])}, "
+            f"{lit(self.ratio[0])}, {lit(self.ratio[1])}, et, el, eh, ew);",
+            f"    p[uint2({k}, b)] = on && found ? 1.0 : 0.0;",
+            f"    p[uint2({k + 1}, b)] = float(et); p[uint2({k + 2}, b)] = float(el);",
+            f"    p[uint2({k + 3}, b)] = float(eh); p[uint2({k + 4}, b)] = float(ew);",
+            f"    p[uint2({k + 5}, b)] = float(pcg({rng}) >> 8);     // 24 bits: exact in a float",
+            "}"]
+
+    def _erase(self, b: Binding) -> list[str]:
+        """Lines for the final pass (x, y, b and the normalized pixel c in scope)."""
+        k = b.k(self)
+        inside = (f"{P(k)} > 0.5 && y >= int({P(k + 1)}) && x >= int({P(k + 2)}) && "
+                  f"y < int({P(k + 1)}) + int({P(k + 3)}) && x < int({P(k + 2)}) + int({P(k + 4)})")
+        if self.value is None:
+            fill = f"normal4(uint({P(k + 5)}), b, x, y)"
+        else:
+            fill = f"float4({lit(self.value[0])}, {lit(self.value[1])}, {lit(self.value[2])}, 0.0)"
+        return [f"if ({inside}) c = {fill};"]
+
+    def __repr__(self) -> str:
+        value = "'random'" if self.value is None else self.value
+        return f"RandomErasing(p={self.p}, scale={self.scale}, ratio={self.ratio}, value={value})"

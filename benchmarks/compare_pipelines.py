@@ -14,8 +14,11 @@
 #   simclr    RandomResizedCrop(224) + flip + RandomApply(ColorJitter, 0.8)
 #             + RandomGrayscale(0.2) + RandomApply(GaussianBlur(23), 0.5)
 #             + RandomSolarize(0.5, 0.2) + Normalize
-# Input: a batch of photo-like 512x384 uint8 images already on the GPU
-# (decoding is not timed). Times are the median wall time of synced calls
+# Input: a batch of photo-like 512x384 uint8 images already on the GPU, or
+# with --images DIR the first --batch JPEGs under DIR decoded on the GPU as a
+# list of their own sizes (then torchvision runs per image only: different
+# sizes cannot form one batch). Decoding is not timed. --interpolation
+# bicubic switches RandomResizedCrop/Resize in both libraries. Times are the median wall time of synced calls
 # and the summed GPU kernel time per call (torch profiler).
 #
 # Reference run (2026-11-03, NVIDIA H100 NVL, torch 2.13, torchvision 0.28,
@@ -56,6 +59,7 @@ import platform
 import statistics
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import torch
 
@@ -72,12 +76,15 @@ def photo_batch(n: int, h: int = 384, w: int = 512) -> torch.Tensor:
     return (x.clamp(0, 1) * 255).round().to(torch.uint8).contiguous()
 
 
-def ours() -> dict:
+def ours(interp: str = "bilinear") -> dict:
     return {
-        "imagenet": A.Compose([A.RandomResizedCrop(224), A.RandomHorizontalFlip(),
+        "imagenet": A.Compose([A.RandomResizedCrop(224, interpolation=interp),
+                               A.RandomHorizontalFlip(),
                                A.ColorJitter(0.4, 0.4, 0.4, 0.1), A.Normalize(MEAN, STD)]),
-        "eval": A.Compose([A.Resize(256), A.CenterCrop(224), A.Normalize(MEAN, STD)]),
-        "simclr": A.Compose([A.RandomResizedCrop(224), A.RandomHorizontalFlip(),
+        "eval": A.Compose([A.Resize(256, interpolation=interp), A.CenterCrop(224),
+                           A.Normalize(MEAN, STD)]),
+        "simclr": A.Compose([A.RandomResizedCrop(224, interpolation=interp),
+                             A.RandomHorizontalFlip(),
                              A.RandomApply([A.ColorJitter(0.4, 0.4, 0.2, 0.1)], p=0.8),
                              A.RandomGrayscale(p=0.2),
                              A.RandomApply([A.GaussianBlur(23)], p=0.5),
@@ -85,14 +92,17 @@ def ours() -> dict:
     }
 
 
-def torchvision_recipes() -> dict:
-    from torchvision.transforms import v2
+def torchvision_recipes(interp: str = "bilinear") -> dict:
+    from torchvision.transforms import InterpolationMode, v2
 
+    mode = InterpolationMode(interp)
     tail = [v2.ToDtype(torch.float16, scale=True), v2.Normalize(list(MEAN), list(STD))]
-    crop = [v2.RandomResizedCrop(224, antialias=True), v2.RandomHorizontalFlip()]
+    crop = [v2.RandomResizedCrop(224, interpolation=mode, antialias=True),
+            v2.RandomHorizontalFlip()]
     return {
         "imagenet": v2.Compose(crop + [v2.ColorJitter(0.4, 0.4, 0.4, 0.1)] + tail),
-        "eval": v2.Compose([v2.Resize(256, antialias=True), v2.CenterCrop(224)] + tail),
+        "eval": v2.Compose([v2.Resize(256, interpolation=mode, antialias=True),
+                            v2.CenterCrop(224)] + tail),
         "simclr": v2.Compose(crop + [v2.RandomApply([v2.ColorJitter(0.4, 0.4, 0.2, 0.1)], p=0.8),
                                      v2.RandomGrayscale(p=0.2),
                                      v2.RandomApply([v2.GaussianBlur(23)], p=0.5),
@@ -115,6 +125,16 @@ def kornia_recipes() -> dict:
             K.RandomGaussianBlur((23, 23), (0.1, 2.0), p=0.5),
             K.RandomSolarize(thresholds=0.0, additions=0.0, p=0.2), norm).cuda(),
     }
+
+
+def jpeg_list(folder: str, n: int) -> list:
+    """The first n JPEGs under folder (sorted), decoded on the GPU (not timed)."""
+    from torchvision.io import decode_jpeg, read_file
+
+    files = sorted(Path(folder).rglob("*.jpg"))[:n]
+    if len(files) < n:
+        raise SystemExit(f"found {len(files)} JPEGs under {folder}, need {n}")
+    return decode_jpeg([read_file(str(f)) for f in files], device="cuda")
 
 
 def wall_ms(fn, x, iters: int, warmup: int) -> float:
@@ -148,20 +168,23 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Compare augmentation pipelines on one GPU batch.")
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--iters", type=int, default=20)
+    ap.add_argument("--interpolation", default="bilinear", choices=["bilinear", "bicubic"])
+    ap.add_argument("--images", help="folder of JPEGs: time on the first --batch of them, "
+                                     "decoded on the GPU as a list of their own sizes")
     ap.add_argument("--json", help="write results to this file")
     args = ap.parse_args()
     if not torch.cuda.is_available():
         raise SystemExit("needs a CUDA GPU")
 
-    x = photo_batch(args.batch)
-    tv, ko = torchvision_recipes(), kornia_recipes()
+    x = jpeg_list(args.images, args.batch) if args.images else photo_batch(args.batch)
+    tv = torchvision_recipes(args.interpolation)
+    ko = {} if args.images or args.interpolation != "bilinear" else kornia_recipes()
     rows = []
-    for recipe, pipe in ours().items():
-        methods = {
-            "slangvision": pipe,
-            "torchvision batch (one setting)": tv[recipe],
-            "torchvision per image": lambda b, t=tv[recipe]: torch.stack([t(im) for im in b]),
-        }
+    for recipe, pipe in ours(args.interpolation).items():
+        methods = {"slangvision": pipe}
+        if not args.images:         # images of different sizes cannot form one batch tensor
+            methods["torchvision batch (one setting)"] = tv[recipe]
+        methods["torchvision per image"] = lambda b, t=tv[recipe]: torch.stack([t(im) for im in b])
         if recipe in ko:
             methods["Kornia fp16 per image"] = lambda b, k=ko[recipe]: k(b.half() / 255.0)
         for name, fn in methods.items():
@@ -176,7 +199,9 @@ def main() -> None:
     if args.json:
         meta = {"date": datetime.now(timezone.utc).isoformat(), "gpu": torch.cuda.get_device_name(),
                 "torch": torch.__version__, "slangvision": A.__version__,
-                "python": platform.python_version(), "batch": args.batch}
+                "python": platform.python_version(), "batch": args.batch,
+                "interpolation": args.interpolation,
+                "images": args.images and Path(args.images).name}
         with open(args.json, "w") as f:
             json.dump({"meta": meta, "results": rows}, f, indent=1)
 

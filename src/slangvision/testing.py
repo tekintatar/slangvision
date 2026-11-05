@@ -32,7 +32,9 @@ def max_reference_error(pipeline: Compose, images: Any, layout: str = "chw") -> 
     difference from the torch references fed the same random values, in
     output units (normalized, if the pipeline ends with Normalize)."""
     out, params = pipeline._run(images, layout)
-    return float((out.float() - _replay(pipeline, images, params, layout)).abs().max())
+    ref = _replay(pipeline, images, params, layout)
+    keep = ~ref.isnan()         # RandomErasing(value="random") noise is not replayed
+    return float((out.float() - ref)[keep].abs().max()) if keep.any() else 0.0
 
 
 def _replay(pipeline: Compose, images: Any, params: "torch.Tensor",
@@ -100,6 +102,19 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
         if row[b.k(t)] > 0.5:
             for child in t.transforms:
                 img = _reference(child, b, img, row)
+        return img
+    if isinstance(t, T.RandomErasing):
+        import torch
+
+        k = b.k(t)
+        if row[k] > 0.5:
+            top, left, h, w = (int(v) for v in row[k + 1:k + 5])
+            img = img.clone()
+            if t.value is None:     # noise cannot be replayed: max_reference_error skips NaN
+                img[:, top:top + h, left:left + w] = float("nan")
+            else:
+                img[:, top:top + h, left:left + w] = torch.tensor(t.value,
+                                                                 device=img.device)[:, None, None]
         return img
     if isinstance(t, T.Normalize):
         return F.normalize(img, list(t.mean), list(t.std))

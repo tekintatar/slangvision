@@ -174,3 +174,35 @@ void sample_rrc(inout uint s, int W, int H, float smin, float smax, float rmin, 
     top = (H - h) / 2;
     left = (W - w) / 2;
 }
+
+// torchvision RandomErasing's box for a W x H image: 10 tries at an area in
+// [smin, smax] of the image and a log-uniform aspect in [rmin, rmax]; the
+// first that fits strictly inside is placed uniformly. Returns false (no
+// erasing) when none fits. Always draws the same count, so a shared
+// (same_on_batch) stream stays aligned across images.
+bool sample_box(inout uint s, int W, int H, float smin, float smax, float rmin, float rmax,
+                out int top, out int left, out int h, out int w)
+{
+    float area = float(H * W);
+    float lo = log(rmin);
+    float hi = log(rmax);
+    h = 0;
+    w = 0;
+    bool found = false;
+    for (int t = 0; t < 10; ++t)
+    {
+        float ea = area * urand(s, smin, smax);
+        float ar = exp(urand(s, lo, hi));
+        int eh = int(round(sqrt(ea * ar)));
+        int ew = int(round(sqrt(ea / ar)));
+        if (!found && eh < H && ew < W)
+        {
+            h = eh;
+            w = ew;
+            found = true;
+        }
+    }
+    top = min(int(rnd(s) * float(H - h + 1)), H - h);
+    left = min(int(rnd(s) * float(W - w + 1)), W - w);
+    return found;
+}

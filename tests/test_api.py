@@ -24,7 +24,9 @@ class Box(A.NeighbourhoodOp):
     ([A.RandomResizedCrop(16), A.RandomCrop(32)], "larger than the image"),
     ([A.Resize(256), A.Pad(4)], "follow it with CenterCrop or RandomCrop"),
     ([A.Resize(256)], "follow it with CenterCrop or RandomCrop"),
-    ([A.Normalize(MEAN, STD), A.ColorJitter(0.4)], "Normalize must be the last"),
+    ([A.Normalize(MEAN, STD), A.ColorJitter(0.4)], "Normalize must come after every transform"),
+    ([A.RandomErasing(), A.Normalize(MEAN, STD)], "RandomErasing must come last"),
+    ([A.RandomErasing(), A.ColorJitter(0.4)], "RandomErasing must come last"),
     ([A.RandomResizedCrop(64), Box(), A.RandomHorizontalFlip()], "before your NeighbourhoodOps"),
     ([A.RandomResizedCrop(8), A.GaussianBlur(23)], "larger than its radius"),
     ([A.Resize((64, 6)), A.RandomApply([A.GaussianBlur((13, 3))])], "larger than its radius"),
@@ -52,6 +54,13 @@ def test_valid_pipelines_build_without_a_gpu():
                        A.ColorJitter(0.3, 0.3, 0.3), A.Normalize(MEAN, STD)])
     assert "sample_params" in cifar.source and "stage_1" in three.source
     assert A.Pad(4, fill=None).fill == (0.0, 0.0, 0.0)
+    deit = A.Compose([A.RandomResizedCrop(224, interpolation="bicubic"),
+                      A.RandomHorizontalFlip(), A.Normalize(MEAN, STD),
+                      A.RandomErasing(p=0.25, scale=(0.02, 1 / 3), ratio=(0.3, 1 / 0.3),
+                                      value="random"),
+                      A.RandomErasing(p=0.25, value=(0.0, 0.5, -1.0))])
+    assert deit.source.count("normal4(") >= 2      # the library function and its one use
+    A.Compose([A.ColorJitter(0.4), A.RandomErasing()])      # without Normalize
 
 
 @pytest.mark.parametrize("make, match", [
@@ -86,6 +95,12 @@ def test_valid_pipelines_build_without_a_gpu():
     (lambda: A.Pad("4"), "padding"),
     (lambda: A.Pad([2.7]), "padding"),
     (lambda: A.RandomChoice([]), "at least one"),
+    (lambda: A.RandomErasing(value="noise"), "'random'"),
+    (lambda: A.RandomErasing(value=(0.1, 0.2)), "three numbers"),
+    (lambda: A.RandomErasing(scale=(0.5, 0.2)), "scale"),
+    (lambda: A.RandomErasing(scale=(0.1, 1.5)), "scale"),
+    (lambda: A.RandomErasing(ratio=(0.0, 3.0)), "ratio"),
+    (lambda: A.RandomErasing(p=2.0), "p must be in"),
     (lambda: A.RandomChoice([A.RandomGrayscale()], p=[1, 2]), "one non-negative weight"),
     (lambda: A.RandomChoice([A.GaussianBlur(3), A.GaussianBlur(5)]), "at most one"),
     (lambda: A.RandomChoice([A.RandomVerticalFlip()]), "flips"),

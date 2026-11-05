@@ -72,7 +72,8 @@ the GPU device once per process); later calls reuse the compiled kernels.
 | `RandomGrayscale(p=0.1)` | decided per image; output keeps 3 channels |
 | `GaussianBlur(kernel_size, sigma=(0.1, 2.0))` | sigma drawn per image; the kernel radius must be smaller than the image, as torchvision's reflect padding requires |
 | `RandomSolarize(threshold, p=0.5)` | `threshold` is on the 0-1 scale (0.5, not 128) |
-| `Normalize(mean, std)` | must be last |
+| `Normalize(mean, std)` | comes after everything except `RandomErasing` |
+| `RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0)` | box drawn per image; comes last (after `Normalize`); `value="random"` fills per-pixel N(0, 1) noise from SlangVision's own generator |
 
 Every random transform takes `same_on_batch=False`. `interpolation` is
 `"bilinear"` or `"bicubic"` (or torchvision's `InterpolationMode`), with
@@ -91,6 +92,12 @@ blurs with PIL's radius-based filter, which `GaussianBlur` only
 approximates. `RandomChoice(..., same_on_batch=True)` makes the same choice
 for every image.
 
+DeiT and ConvNeXt erase with timm's `RandomErasing(probability=0.25,
+mode="pixel")`, which is `RandomErasing(p=0.25, scale=(0.02, 1 / 3),
+ratio=(0.3, 1 / 0.3), value="random")` after `Normalize`.
+`slangvision.testing.max_reference_error` skips noise-filled pixels (no
+library can replay another's noise); the box itself is compared.
+
 Pipeline rules, checked when you build the `Compose`:
 - Geometry comes first: at most one `RandomResizedCrop` or `Resize`, then
   any sequence of `Pad`, `CenterCrop` and `RandomCrop` (each pads with its
@@ -107,7 +114,9 @@ Pipeline rules, checked when you build the `Compose`:
   before any `NeighbourhoodOp` you define (they commute with colour ops and
   with Gaussian blur).
 - Each transform object appears once; create a second one to use it twice.
-- `Normalize`, if present, is last. Without it the output is in [0, 1].
+- `Normalize`, if present, comes after every transform except
+  `RandomErasing`, which comes last (several erase several boxes, in order).
+  Without `Normalize` the output is in [0, 1].
 
 `Compose(transforms, dtype=torch.float16)` is the default; `torch.bfloat16`
 (for models trained in bfloat16, at the same speed as float16) and
@@ -160,13 +169,22 @@ while training:
     ...                                      # training step on x
 ```
 
-**With DALI, import `slangvision` before building a DALI pipeline.** If
-DALI loads its native libraries first, SlangPy crashes with a segmentation
-fault while creating its CUDA device (seen with DALI 2.4
-and SlangPy 0.42); in the other order both work in one process.
+**Import `slangvision` before DALI builds a pipeline or torchvision decodes
+on the GPU.** If either loads its native GPU libraries before SlangPy is
+imported, SlangPy crashes with a segmentation fault while creating its CUDA
+device (seen with DALI 2.4, torchvision 0.28 and SlangPy 0.42/0.43); in the
+other order they work in one process.
+
+torchvision's GPU decoder (nvJPEG) decoded and augmented correctly in
+isolation, but inside our FGVC-Aircraft training runs it once stalled and
+once drove the loss to NaN; we have not found why yet. DALI is the GPU
+decoder those runs validate.
 
 Without a GPU decoder, keep your `DataLoader` but let the workers only
-decode, and augment the batch on the GPU. Have the workers pack each batch
+decode, and augment the batch on the GPU. This pays off for ImageNet-sized
+photos (about 0.15 MP); with larger ones (FGVC-Aircraft, about 0.7 MP) the
+workers ship whole decoded images instead of 224 px crops, and it was slower
+than augmenting on the CPU (see Performance). Have the workers pack each batch
 into one buffer: with `collate_fn=list`, PyTorch shares every image between
 processes separately, which made training slower than augmenting on the CPU
 (2,037 against 2,721 images/s for ResNet-18 in the benchmark below).
@@ -183,6 +201,35 @@ for flat, shapes, labels in loader:
     parts = flat.cuda(non_blocking=True).split(shapes.prod(1).tolist())
     x = train([part.view(*s) for part, s in zip(parts, shapes.tolist())])
 ```
+
+## MixUp and CutMix
+
+They mix images with each other and need the labels, so they run after the
+pipeline, on its output batch:
+
+```py
+x, y = mix(train(images), labels)       # labels: (B,) class indices or (B, classes)
+```
+
+- `MixUp(alpha=1.0, num_classes=None)` and `CutMix(alpha=1.0,
+  num_classes=None)` are torchvision's `v2.MixUp` and `v2.CutMix`: one
+  weight (and, for CutMix, one box) per batch, each image mixed with the
+  previous one, labels one-hot and mixed by the same weight (CutMix: by the
+  box's actual area). They draw from torch's CPU generator exactly as
+  torchvision does, so under the same `torch.manual_seed` they give
+  torchvision's result. torchvision recipes pick one per batch with
+  `random.choice` or `v2.RandomChoice([cutmix, mixup])`.
+- `MixUpCutMix(mixup_alpha=1.0, cutmix_alpha=0.0, cutmix_minmax=None,
+  prob=1.0, switch_prob=0.5, mode="batch", correct_lam=True,
+  label_smoothing=0.1, num_classes=1000)` is timm's `Mixup`, the DeiT,
+  ConvNeXt and MAE recipe with `mixup_alpha=0.8, cutmix_alpha=1.0`. Image
+  `i` mixes with `B - 1 - i`; `mode="pair"` and `"elem"` draw per mirrored
+  pair and per image. timm draws with NumPy, so the random values differ
+  from timm's; the rules are the same.
+
+One Slang kernel per call writes the mixed batch (float16, bfloat16 or
+float32, as given); the parameters come from torch's CPU generator, so there
+is no GPU sync.
 
 ## Randomness
 
@@ -298,6 +345,44 @@ has the reference runs and raw data). How to read them:
   warm-up, one run per row, CPU rows about ±10% between runs) used a script
   that is not part of this repository, with the same kernels while they
   shipped as `slangimage.augment`.
+
+### Larger photos: FGVC-Aircraft
+
+[FGVC-Aircraft](https://www.robots.ox.ac.uk/~vgg/data/fgvc-aircraft/)
+(non-commercial research use) has real photos of about 0.7 MP (median
+1024x695; 13% over 1 MP), about five times ImageNet's pixel count, so
+crops downscale 3-4x to 224 px. NVIDIA RTX PRO 4500 Blackwell, 16 CPU
+cores, torch 2.13, torchvision 0.28.
+
+Augmentation of 256 JPEGs decoded on the GPU at their own sizes
+(`benchmarks/compare_pipelines.py --images`, raw data in
+`benchmarks/results/rtx_pro_4500_fgvc_aircraft_*.json`), ms per batch;
+torchvision runs per image (images of different sizes cannot form one
+batch):
+
+| recipe | SlangVision bilinear | SlangVision bicubic | torchvision bilinear | torchvision bicubic |
+|---|---:|---:|---:|---:|
+| ImageNet: crop, flip, ColorJitter, Normalize | 3.24 | 9.40 | 203 | 206 |
+| eval: Resize, CenterCrop, Normalize | 1.79 | 4.30 | 28.6 | 33.5 |
+| SimCLR | 4.70 | 11.1 | 205 | 210 |
+
+Training from scratch on its 6,667 trainval images (100 classes), batch
+256, bf16, ImageNet recipe, images per second over 45 s after warm-up:
+
+| input pipeline | ResNet-50 | ResNet-18 |
+|---|---:|---:|
+| model alone (no input pipeline) | 1,207 | 3,822 |
+| DataLoader (16 workers): decode + torchvision augmentation | 987 | 2,051 |
+| DALI decode + DALI augmentation | 1,170 | 3,064 |
+| DALI decode + SlangVision | 1,148 | 3,164 |
+| DataLoader decode only + SlangVision (packed batches) | 750 | 1,465 |
+
+- With DALI decoding, SlangVision is within 2% of DALI's own augmentation
+  on ResNet-50 and 3% ahead on ResNet-18, with torchvision's results.
+- Bigger photos make bicubic resizing about three times bilinear's cost;
+  it stays 20-60x faster than torchvision's per-image loop.
+- Decoding on CPU workers and augmenting on the GPU loses here: the
+  workers ship whole decoded photos (about 2 MB each) instead of crops.
 
 ## Limits
 

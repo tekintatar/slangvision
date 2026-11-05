@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, Any, Sequence
 
 from ._base import P, Binding, NeighbourhoodOp, Transform, _UserOp, lit
 from .transforms import (CenterCrop, ColorJitter, GaussianBlur, Normalize, Pad, RandomApply,
-                         RandomChoice, RandomCrop, RandomHorizontalFlip, RandomResizedCrop,
-                         RandomVerticalFlip, Resize, _Window)
+                         RandomChoice, RandomCrop, RandomErasing, RandomHorizontalFlip,
+                         RandomResizedCrop, RandomVerticalFlip, Resize, _Window)
 
 if TYPE_CHECKING:
     import torch
@@ -82,7 +82,8 @@ def _dtype_name(dtype: Any) -> str:
 
 
 _BUILT_IN = (RandomResizedCrop, Resize, CenterCrop, Pad, RandomCrop, RandomHorizontalFlip,
-             RandomVerticalFlip, ColorJitter, GaussianBlur, RandomApply, RandomChoice, Normalize)
+             RandomVerticalFlip, ColorJitter, GaussianBlur, RandomApply, RandomChoice, Normalize,
+             RandomErasing)
 
 
 def _walk(transforms: Sequence[Transform]):
@@ -119,7 +120,7 @@ class Compose:
     ``torch.float32`` output are also available. Geometric transforms come
     first: an optional RandomResizedCrop or Resize, then any sequence of Pad,
     CenterCrop and RandomCrop; they fix the output size. Flips and colour ops
-    follow in any order; Normalize, if present, is last.
+    follow in any order; Normalize, if present, comes next, and RandomErasing last.
 
     Calling the pipeline returns a contiguous ``(B, 3, H, W)`` tensor of
     ``dtype`` on the current CUDA stream. ``images`` is a ``(B, 3, H, W)``
@@ -152,9 +153,15 @@ class Compose:
         self._stages: list[list[Transform]] = [[]]
         self._neighbourhood: list[Transform] = []
         self._normalize: Normalize | None = None
+        self._erasing: list[RandomErasing] = []
         user_neighbourhood = False
         for i, t in enumerate(self.transforms):
             kind = t._kind
+            if self._erasing and kind != "erase":
+                raise ValueError("RandomErasing must come last (after Normalize)")
+            if self._normalize is not None and kind != "erase":
+                raise ValueError("Normalize must come after every transform except "
+                                 "RandomErasing")
             if kind == "geometry":
                 if self._flips or self._neighbourhood or any(self._stages):
                     raise ValueError(f"{t!r}: geometric transforms must come first")
@@ -174,9 +181,9 @@ class Compose:
                 self._stages.append([t])
                 user_neighbourhood |= isinstance(_unwrap(t)[1], NeighbourhoodOp)
             elif kind == "normalize":
-                if i != len(self.transforms) - 1:
-                    raise ValueError("Normalize must be the last transform")
                 self._normalize = t     # type: ignore[assignment]
+            elif kind == "erase":
+                self._erasing.append(t)     # type: ignore[arg-type]
             else:
                 raise TypeError(f"{t!r}: unknown transform kind {kind!r}")
         self._resample = geometry[0] if geometry and getattr(geometry[0], "_resamples",
@@ -343,8 +350,12 @@ class Compose:
                 args = "Tensor<Mid, 4> src"
                 inp = f"input_{s}(src, p, b, x, y, OW, OH)"
             dst = "RWTensor<Out, 4>" if s == last else "RWTensor<Mid, 4>"
-            store = ("store_out(dst, x, y, b, (c - mean) * inv_std);" if s == last
-                     else "store_mid(dst, x, y, b, c);")
+            if s == last:
+                erase = [ln for e in self._erasing for ln in e._erase(b)]
+                store = " ".join(["c = (c - mean) * inv_std;", *erase,
+                                  "store_out(dst, x, y, b, c);"])
+            else:
+                store = "store_mid(dst, x, y, b, c);"
             src += [f"void stage_{s}(int3 pix, {args}, Tensor<float, 2> p, Tensor<float, 2> st,",
                     f"             {dst} dst, int OW, int OH, float4 mean, float4 inv_std)",
                     "{",

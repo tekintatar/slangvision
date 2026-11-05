@@ -27,6 +27,7 @@ __version__ = "0.1.0"
 from . import _runtime  # noqa: F401
 from ._base import Choice, ColorOp, NeighbourhoodOp, Uniform
 from ._compile import Compose
+from .mixing import CutMix, MixUp, MixUpCutMix
 from .transforms import (
     CenterCrop,
     ColorJitter,
@@ -36,6 +37,7 @@ from .transforms import (
     RandomApply,
     RandomChoice,
     RandomCrop,
+    RandomErasing,
     RandomGrayscale,
     RandomHorizontalFlip,
     RandomResizedCrop,
@@ -50,14 +52,18 @@ __all__ = [
     "Choice",
     "ColorJitter",
     "ColorOp",
+    "CutMix",
     "Compose",
     "GaussianBlur",
+    "MixUp",
+    "MixUpCutMix",
     "NeighbourhoodOp",
     "Normalize",
     "Pad",
     "RandomApply",
     "RandomChoice",
     "RandomCrop",
+    "RandomErasing",
     "RandomGrayscale",
     "RandomHorizontalFlip",
     "RandomResizedCrop",

@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- `MixUp` and `CutMix` (torchvision's, draw for draw: the same seed gives
+  torchvision's result) and `MixUpCutMix` (timm's `Mixup`: switch
+  probability, label smoothing, batch/pair/elem modes, `cutmix_minmax`),
+  applied to Compose's output batch and labels by one fused Slang kernel.
+- `RandomErasing` (torchvision's, after `Normalize`; `value` a number, per
+  channel, or `"random"` for per-pixel normal noise, which also covers timm's
+  `mode="pixel"`). `max_reference_error` skips noise-filled pixels.
 - `RandomCrop` (padding, `pad_if_needed`, `fill`, constant/edge/reflect/
   symmetric padding), `Pad`, `RandomVerticalFlip` and `RandomChoice`
   (colour ops and at most one blur, also nested in RandomApply; covers DeiT
