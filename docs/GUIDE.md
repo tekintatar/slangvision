@@ -142,8 +142,10 @@ reuses it.
 Decoding usually limits training throughput, so pick a fast decoder:
 
 ```py
-# torchvision (0.28) GPU decode, CHW
+# torchvision (0.28) GPU decode, CHW. Wait for the previous training step
+# first: torchvision's decoder can otherwise overwrite its memory (see below).
 from torchvision.io import ImageReadMode, decode_jpeg
+torch.cuda.current_stream().synchronize()
 x = train(decode_jpeg(list_of_jpeg_byte_tensors, mode=ImageReadMode.RGB, device="cuda"))
 
 # nvImageCodec (hardware JPEG decoder on A100/H100-class GPUs), HWC
@@ -175,10 +177,17 @@ imported, SlangPy crashes with a segmentation fault while creating its CUDA
 device (seen with DALI 2.4, torchvision 0.28 and SlangPy 0.42/0.43); in the
 other order they work in one process.
 
-torchvision's GPU decoder (nvJPEG) decoded and augmented correctly in
-isolation, but inside our FGVC-Aircraft training runs it once stalled and
-once drove the loss to NaN; we have not found why yet. DALI is the GPU
-decoder those runs validate.
+**torchvision's GPU decoder needs a sync while a training step is still
+running** (torchvision 0.28). `decode_jpeg(..., device="cuda")` allocates its
+output tensors on the current stream but fills them on a private stream that
+does not wait for the current one, so it can write into memory that the
+previous training step has freed but is still using. In our FGVC-Aircraft
+runs this drove the loss to NaN within ten steps, with or without
+SlangVision, and once stalled training. Calling
+`torch.cuda.current_stream().synchronize()` before each decode fixes it, but
+the decoder then no longer overlaps training: 844 images/s for ResNet-50 and
+1,587 for ResNet-18, below DALI with SlangVision (1,148 and 3,164). DALI is
+the faster GPU decoder.
 
 Without a GPU decoder, keep your `DataLoader` but let the workers only
 decode, and augment the batch on the GPU. This pays off for ImageNet-sized
