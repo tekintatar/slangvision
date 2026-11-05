@@ -19,6 +19,7 @@ float prm(Tensor<float, 2> p, int b, int k) { return p[uint2(k, b)]; }
 float gray(float4 c) { return 0.2989 * c.x + 0.587 * c.y + 0.114 * c.z; }
 
 float4 clamp01(float4 c) { return clamp(c, 0.0, 1.0); }
+float clamp01(float v) { return clamp(v, 0.0, 1.0); }
 
 // torchvision's float -> uint8 conversion (to_dtype_image, scale=True):
 // value * 255.999 truncated. Clamped here; torchvision's cast of a value

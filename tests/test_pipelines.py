@@ -1440,3 +1440,44 @@ def test_hwc_images_without_the_layout_get_a_hint():
     with pytest.raises(ValueError, match='layout="hwc"'):
         A.Compose([A.RandomResizedCrop(32)])(
             [torch.zeros(40, 50, 3, dtype=torch.uint8, device="cuda")])
+
+
+def test_a_gpu_decode_before_the_import_stops_with_a_message(tmp_path):
+    """SlangPy segfaults creating its device after an early GPU decode; the
+    first pipeline call raises instead (checked in a fresh process)."""
+    import os
+    import subprocess
+    import sys
+
+    script = tmp_path / "late.py"
+    script.write_text(
+        "import io, torch, torchvision.io\n"
+        "from PIL import Image\n"
+        "buf = io.BytesIO(); Image.new('RGB', (32, 24)).save(buf, 'JPEG')\n"
+        "data = torch.frombuffer(bytearray(buf.getvalue()), dtype=torch.uint8)\n"
+        "torchvision.io.decode_jpeg([data], device='cuda')\n"
+        "import slangvision as A\n"
+        "try:\n"
+        "    A.Compose([A.RandomResizedCrop(16)])(torch.zeros(1, 3, 24, 32, dtype=torch.uint8,"
+        " device='cuda'))\n"
+        "except RuntimeError as e:\n"
+        "    print('raised:', e)\n")
+    env = {k: v for k, v in os.environ.items() if k != "SLANGVISION_ALLOW_LATE_IMPORT"}
+    run = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, env=env,
+                         timeout=300)
+    assert run.returncode == 0, run.stderr[-2000:]
+    assert "raised: slangvision was imported after a GPU decoder ran" in run.stdout
+    assert "RuntimeWarning" in run.stderr
+
+
+def test_clamp01_takes_a_float(batch):
+    class Gamma(A.ColorOp):
+        params = {"g": A.Uniform(0.5, 2.0)}
+        slang = ("float4 apply(float4 c, float g) { return float4(clamp01(pow(c.x, g)), "
+                 "clamp01(pow(c.y, g)), clamp01(pow(c.z, g)), 0.0); }")
+
+        def reference(self, img, g):
+            return img.clamp(0, 1) ** g
+
+    assert max_reference_error(A.Compose([A.RandomCrop(64), Gamma()], dtype=torch.float32),
+                               batch) < 1e-5

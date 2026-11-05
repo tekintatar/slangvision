@@ -30,7 +30,8 @@ def _size2(size: Any, name: str) -> tuple[int, int]:
 
 
 _MIXER_HINT = ("; MixUp and CutMix mix the batch after Compose, so pick one per batch "
-               "with random.choice([cutmix, mixup]) or torchvision's v2.RandomChoice")
+               "with torchvision's v2.RandomChoice([cutmix, mixup]) or "
+               "`cutmix if torch.rand(()) < 0.5 else mixup` (both follow torch.manual_seed)")
 
 
 def _range(value: Any, name: str, center: float, bound: tuple[float, float],

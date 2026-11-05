@@ -228,10 +228,11 @@ class _UserOp(Transform):
             got = len([a for a in defs[0].split(",") if a.strip()])
             want = self._fixed_args + len(self.params)
             if got != want:
+                fixed = self._signature[self._signature.index("(") + 1:-6]
                 raise ValueError(
-                    f"{name}.slang: apply takes {got} parameters, but `{self._signature}` with "
-                    f"{len(self.params)} params entries needs {want}: the fixed ones, then one "
-                    "float per entry of params, in order")
+                    f"{name}.slang: apply has {got} parameters but needs {want}: {fixed}, "
+                    f"then one float for each of the {len(self.params)} entries of params, "
+                    "in order")
 
     def _namespace(self) -> str:
         digest = hashlib.sha1(self.slang.encode()).hexdigest()[:10]

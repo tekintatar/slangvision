@@ -49,7 +49,9 @@
   Seeded from `torch.manual_seed`, with no host sync.
 - **Reads any decoder's output in place**: a uint8 batch, or a list of
   differently sized images from `torchvision.io`, nvImageCodec, DALI or
-  DataLoader workers (`layout="hwc"` for `(H, W, 3)`).
+  DataLoader workers (`layout="hwc"` for `(H, W, 3)`). Decode on the GPU too
+  for the full speed-up: with CPU decoding in DataLoader workers it pays off
+  only for ImageNet-sized photos, since the workers then ship whole images.
 - **Your own ops in a few lines.** A custom augmentation is a Python class
   with one Slang function, fused into the same kernels as the built-ins.
 - **Light.** Pure Python plus Slang source: no compiled extension to build.
@@ -82,7 +84,8 @@ PyTorch's NVRTC back:
 pip install "cuda-toolkit[nvrtc,cudart]==13.0.*"   # your driver's CUDA version (nvidia-smi)
 ```
 
-pip warns about a conflict with torch's pin; PyTorch keeps working. Your own
+pip prints an ERROR about a conflict with torch's pin and installs it anyway;
+PyTorch keeps working. Your own
 CUDA Toolkit works too: see
 [Requirements](https://github.com/tekintatar/slangvision/blob/main/docs/GUIDE.md#requirements).
 
@@ -106,6 +109,9 @@ x = train(images)   # (64, 3, 224, 224) float16, on the current CUDA stream
   any sizes.
 - Output: `Compose(..., dtype=torch.float16)` by default; `torch.bfloat16`
   and `torch.float32` too.
+- Import `slangvision` before anything decodes on the GPU (torchvision's
+  `decode_jpeg(..., device="cuda")`, DALI): in the other order SlangPy
+  cannot start, and SlangVision stops with an error that says so.
 - The first call compiles the pipeline (about 2 s); later calls reuse the
   kernels, and compiled kernels are cached on disk, so the first call in a
   later process takes about 1.5 s.
@@ -307,6 +313,7 @@ has the details.
 
 - CUDA only (Linux with an NVIDIA GPU), and not inside CUDA graph capture.
 - Run pipelines from one thread (SlangPy devices are thread-affine).
+- Call pipelines outside `torch.compile`d code (they run their own kernels).
 - Not yet: AugMix, masks and boxes.
 
 ## Related

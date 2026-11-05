@@ -90,8 +90,12 @@ def device() -> spy.Device:
     index = torch.cuda.current_device()
     if index in _DEVICES:
         return _DEVICES[index]
-    from . import _cuda
+    import os
 
+    from . import _cuda, _preflight
+
+    if _preflight.DECODER_FIRST and os.environ.get("SLANGVISION_ALLOW_LATE_IMPORT") != "1":
+        raise RuntimeError(_preflight.MESSAGE)
     try:
         _cuda.configure()
     except _cuda.SetupError as e:
@@ -193,7 +197,7 @@ def load_module(source: str) -> spy.Module:
         except Exception as e:
             raise RuntimeError("slangvision could not compile this pipeline; "
                                "Compose.source shows the generated Slang (a ColorOp or "
-                               f"NeighborhoodOp you defined is the usual cause): {e}") from e
+                               f"NeighborhoodOp you defined is the usual cause): {e}") from None
     return _MODULES[key]
 
 

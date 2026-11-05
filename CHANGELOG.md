@@ -110,9 +110,17 @@
   installs, since installing torch or torchvision restores PyTorch's.
 - The CUDA tests stop with one message when the GPU or NVRTC is not set up.
 - `main` reports version 0.2.0.dev0.
-- `import slangvision` after torchvision or DALI decoded on the GPU warns
-  that SlangPy will crash and says to import it first (Linux); before, the
+- `import slangvision` after torchvision or DALI decoded on the GPU warns,
+  and the first pipeline call raises a RuntimeError that says to import it
+  first (Linux; `SLANGVISION_ALLOW_LATE_IMPORT=1` overrides); before, the
   first call segfaulted without a word.
+- `clamp01` also takes a `float`; the guide lists the stable Slang helpers
+  with their signatures; a pipeline's compile error is printed once.
+- The guide's "Checking your pipeline" table says float16 policies differ
+  for up to a few percent of values, shows how to see whether a CPU has
+  torch's 15.999999 translate table, and explains uint8 pipelines; mixers
+  are picked with `v2.RandomChoice` or `torch.rand`, which follow
+  `torch.manual_seed`; pipelines stay outside `torch.compile`.
 - A custom op whose `apply` takes the wrong number of parameters is reported
   when the `Compose` is built; a missing reference says where it goes.
 - Faster (RTX PRO 4500, batch 256): statistics pre-passes skip images that

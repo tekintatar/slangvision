@@ -5,9 +5,23 @@
 
 from __future__ import annotations
 
+import inspect
+import re
+
 import pytest
 
 import slangvision as A
+
+
+def _case_id(value):
+    """Name a case by the slangvision classes it builds, so `-k ColorJitter`
+    selects it; the expected-message argument keeps pytest's own id."""
+    try:
+        source = inspect.getsource(value) if callable(value) else repr(value)
+    except (OSError, TypeError):
+        return None
+    names = re.findall(r"\bA\.([A-Z]\w*)", source) or re.findall(r"\b([A-Z]\w*)\(", source)
+    return "+".join(dict.fromkeys(names)) or None
 
 MEAN, STD = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
 
@@ -34,7 +48,7 @@ class Box(A.NeighborhoodOp):
     ([A.Resize((64, 64)), A.RandomAffine(5), A.CenterCrop(32)], "must come first"),
     ([A.RandomResizedCrop(64), A.RandomRotation(10), Box(), A.RandomHorizontalFlip()],
      "before your NeighborhoodOps"),
-])
+], ids=_case_id)
 def test_pipeline_structure_errors(transforms, match):
     with pytest.raises(ValueError, match=match):
         A.Compose(transforms)
@@ -260,7 +274,7 @@ def test_timm_rand_augment_parses_timm_configs_and_builds_one_pass_per_layer():
     (lambda: A.RandomChoice([A.RandomRotation(5), A.GaussianBlur(3)]), "at most one"),
     (lambda: A.RandomApply([A.RandomHorizontalFlip(), A.ColorJitter(0.1)]), "flips"),
     (lambda: A.RandomChoice([A.RandomHorizontalFlip(), A.CenterCrop(8)]), "flips"),
-])
+], ids=_case_id)
 def test_argument_errors(make, match):
     with pytest.raises(ValueError, match=match):
         make()
@@ -357,7 +371,7 @@ def test_porting_hints():
         A.ToDtype                                          # noqa: B018
     with pytest.raises(AttributeError, match="has no attribute 'Nope'"):
         A.Nope                                             # noqa: B018
-    with pytest.raises(TypeError, match="random.choice"):
+    with pytest.raises(TypeError, match="v2.RandomChoice"):
         A.RandomChoice([A.CutMix(num_classes=3), A.MixUp(num_classes=3)])
 
 
@@ -370,9 +384,9 @@ def test_custom_op_parameter_count_is_checked_when_built():
         params = {"r": A.Choice([1, 2])}
         slang = "float4 apply<I : IImage>(I img, int x, int y) { return img.load(x, y); }"
 
-    with pytest.raises(ValueError, match="apply takes 1 parameters.*needs 2"):
+    with pytest.raises(ValueError, match="apply has 1 parameters but needs 2: float4 c, then one float for each of the 1"):
         A.Compose([TooFew()])
-    with pytest.raises(ValueError, match="apply takes 3 parameters.*needs 4"):
+    with pytest.raises(ValueError, match="apply has 3 parameters but needs 4: I img, int x, int y, then"):
         A.Compose([A.RandomCrop(8), Box()])
 
 

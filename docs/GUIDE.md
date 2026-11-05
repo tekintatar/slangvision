@@ -383,7 +383,9 @@ on the GPU.** If a GPU decoder runs before SlangPy is loaded, SlangPy
 crashes with a segmentation fault while creating its CUDA device (seen with
 DALI 2.4, torchvision 0.28-0.29 and SlangPy 0.42/0.43); in the other order
 they work in one process. On Linux, `import slangvision` after a GPU decode
-prints a `RuntimeWarning` that says so before the crash.
+warns, and the first pipeline call raises a `RuntimeError` that says so
+instead of crashing (`SLANGVISION_ALLOW_LATE_IMPORT=1` lets it try anyway,
+for GPU video libraries other than these decoders).
 
 **torchvision's GPU decoder needs a sync while a training step is still
 running** (torchvision 0.28). `decode_jpeg(..., device="cuda")` allocates its
@@ -445,7 +447,10 @@ x, y = mix(train(images), labels)       # labels: (B,) class indices or (B, clas
   box's actual area). They draw from torch's CPU generator exactly as
   torchvision does, so under the same `torch.manual_seed` they give
   torchvision's result. torchvision recipes pick one per batch with
-  `random.choice` or `v2.RandomChoice([cutmix, mixup])`.
+  `v2.RandomChoice([cutmix, mixup])`, which draws from torch's generator, so
+  `torch.manual_seed` repeats it (Python's `random.choice` does not follow
+  it). SlangVision's mixers work the same way: `v2.RandomChoice([A.CutMix(...),
+  A.MixUp(...)])`, or `cutmix if torch.rand(()) < 0.5 else mixup`.
 - `TimmMixup(mixup_alpha=1.0, cutmix_alpha=0.0, cutmix_minmax=None,
   prob=1.0, switch_prob=0.5, mode="batch", correct_lam=True,
   label_smoothing=0.1, num_classes=1000)` is timm's `Mixup`, the DeiT,
@@ -487,9 +492,13 @@ pipe = A.Compose([A.RandomResizedCrop(224), RandomGamma(p=0.5)])
   the ranges arguments.
 - The constructor takes `p` (probability of applying, per image) and
   `same_on_batch`.
-- `gray(c)` (torchvision's luma) and `clamp01(c)` are in scope and stable;
-  the other functions in `src/slangvision/shaders/` are visible too but are
-  internal and may change between releases. Each op's code is placed in its
+- Stable helpers, in scope in your Slang: `float gray(float4 c)`
+  (torchvision's luma), `float4 clamp01(float4 c)` and `float clamp01(float
+  v)` (clamp to [0, 1]); for `NeighborhoodOp`, `img.load(x, y)`,
+  `img.width()` and `img.height()`. The other functions in
+  `src/slangvision/shaders/` are visible too but are internal and may change
+  between releases. The pixel is a `float4` (rgb in `xyz`); work in `float4`
+  or scalars, as `float3` is slow on CUDA. Each op's code is placed in its
   own namespace, so helper functions you define never clash.
 
 An op that reads neighbouring pixels subclasses `A.NeighborhoodOp`:
@@ -606,13 +615,29 @@ units:
 | your pipeline | float32 output | float16 output |
 |---|---|---|
 | crops, resizes, flips, colour jitter, grayscale, blur, bilinear warps, noise, erasing | `fraction` 0, `max` about 1e-5 | `fraction` 0 or a few values just over `tol` after a warp or blur (up to about 8e-3) |
-| step ops (posterize, solarize, equalize) or nearest warps, alone or in a policy, after a crop | under 3 in 1,000 values, each at a level edge or a rounding tie; scattered over many images | more: equalize a level away for about 2% of values after a float16 pass; a value that crosses solarize's threshold flips (a difference up to about 4), posterize's moves a level; `fraction` under a few in 1,000 |
+| step ops (posterize, solarize, equalize) or nearest warps, alone or in a policy, after a crop | under 3 in 1,000 values, each at a level edge or a rounding tie; scattered over many images | more, because the image between passes is float16: `fraction` up to a few percent, mostly equalize a level away (a level after Normalize, about 0.017, is above `tol`); a value that crosses solarize's threshold flips (a difference up to about 4), posterize's moves a level |
 | `TrivialAugmentWide` or `RandAugment` on a CPU where torch's magnitude table has 15.999999 (Arm Macs, AMD EPYC) | whole images shifted one pixel: those images are almost entirely off, a few percent of a batch | the same |
+
+To see whether your CPU has that magnitude table (it is torch's, computed
+when torchvision builds the policy):
+
+```py
+from torchvision.transforms import v2
+print(float(v2.TrivialAugmentWide._AUGMENTATION_SPACE["TranslateX"][0](31, 224, 224)[15]))
+# 16.0, or 15.999999 on an affected CPU
+```
 
 A result inside these is SlangVision matching torchvision as far as float
 arithmetic allows. Outside them (a pipeline without step ops or policies
 with `fraction` above 0 in float32, or many images almost entirely off),
 something differs: look at the worst images (`image_max`) and report it.
+
+The references are torchvision's float functionals. A torchvision pipeline
+that augments uint8 images (with `ToDtype` after the augmentations, as
+torchvision's own recipes do) rounds to uint8 after every op, so it differs
+from both by up to 1/255 per op; that is by design (see the table above),
+and `compare_to_reference` does not model it: there is no uint8 mode. A
+model trained either way sees the same augmentations up to that rounding.
 
 ## Performance
 
@@ -727,5 +752,7 @@ Training from scratch on its 6,667 trainval images (100 classes), batch
   at 224x224); split larger batches.
 - Run pipelines from one thread: the GPU device is created by, and tied to,
   the thread that runs the first pipeline (SlangPy devices are thread-affine).
+- Keep pipelines outside `torch.compile`d code: they run their own kernels,
+  so compiling around them only adds graph breaks (and warnings about them).
 - Not yet: AugMix, masks and boxes. Warps cannot come before a resize or
   crop, and `RandomRotation` has no `expand=True`.

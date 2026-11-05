@@ -22,9 +22,10 @@ pytest                        # CUDA tests skip themselves without a GPU
 If `setup` says PyTorch's NVRTC is newer than your driver, pin the older one
 as it says, after `pip install -e ".[dev]"`: installing the dev extras (or
 anything else that installs torch or torchvision) puts PyTorch's back. The
-full suite takes about 5 minutes on one GPU the first time and about a
-minute once its kernels are cached (`scripts/check.sh -k <name>` runs a part
-of it).
+full suite takes about 5 minutes on one GPU when its kernels must be
+compiled and 1-2 minutes once they are cached. Changing any `.slang` file in
+`shaders/` changes every pipeline's source, so the next run compiles
+everything again; `scripts/check.sh -k <name>` runs a part of the suite.
 
 ## Checking a change
 
@@ -52,8 +53,10 @@ Linux NVIDIA host with the scripts in `scripts/cuda_box/`.
    public custom-op API) where it fits, the way `RandomInvert` or
    `RandomSolarize` are; its Slang functions go in the matching file in
    `src/slangvision/shaders/` (a new topic gets a new file; every `.slang`
-   file there is loaded). Follow the CUDA hot-loop rules in AGENTS.md (no
-   float3/float2).
+   file there is loaded). Those files are joined into one library, so give a
+   new function a specific name (`gamma_curve`, not `apply` or `f`) and
+   search the folder for it first. Follow the CUDA hot-loop rules in
+   AGENTS.md (no float3/float2).
 2. **Export it** from `src/slangvision/__init__.py`: the import and
    `__all__` (both alphabetical).
 3. **Give it a reference** in `src/slangvision/testing.py` (`_reference`):
