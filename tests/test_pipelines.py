@@ -682,3 +682,80 @@ def test_warp_random_values_follow_torchvision(batch):
     assert ey[:, [2, 3]].min() == 61 - 13 and ey[:, [2, 3]].max() == 60
     shared = params[:, k(same) + 9]
     assert torch.all(shared == shared[0])
+
+
+# ------------------------------------------- policy ops and per-image statistics
+def _mismatch(transforms, images, seed=0):
+    """Share of output values off torchvision's by more than TOL32 (float32)."""
+    pipe = A.Compose(transforms, dtype=torch.float32)
+    torch.manual_seed(seed)
+    out, params = pipe._run(images, "chw")
+    return ((out - _replay(pipe, images, params)).abs() > TOL32).float().mean().item()
+
+
+@pytest.mark.parametrize("op", [
+    A.RandomInvert(p=1.0),
+    A.RandomPosterize(3, p=1.0),
+    A.RandomPosterize(0, p=1.0),
+    A.RandomPosterize(8, p=1.0),
+    A.RandomAutocontrast(p=1.0),
+    A.RandomEqualize(p=1.0),
+    A.RandomAdjustSharpness(2.5, p=1.0),
+    A.RandomAdjustSharpness(0.0, p=1.0),
+], ids=repr)
+def test_policy_ops_on_unresampled_images_match_torchvision_exactly(op, batch):
+    # without resampling every value is k/255, never on a posterize or
+    # quantization edge, so even the step functions must match
+    _check([op], batch)
+
+
+@pytest.mark.parametrize("op", [
+    A.RandomInvert(p=0.5),
+    A.RandomAutocontrast(p=0.5),
+    A.RandomAdjustSharpness(2.0, p=0.5),
+    A.RandomApply([A.RandomAdjustSharpness(0.2, p=1.0)], p=0.5),
+], ids=repr)
+def test_continuous_policy_ops_match_torchvision(op, images):
+    _check([A.RandomResizedCrop(96), A.ColorJitter(0.4, 0.4, 0.4, 0.1), op,
+            A.Normalize(MEAN, STD)], images)
+
+
+def test_sharpness_clamps_bicubic_overshoot_at_the_border(images):
+    _check([A.RandomResizedCrop(96, interpolation="bicubic"), A.RandomAdjustSharpness(2.0, p=1.0)],
+           images)
+
+
+@pytest.mark.parametrize("op", [A.RandomPosterize(4, p=0.7), A.RandomEqualize(p=0.7)], ids=repr)
+def test_step_policy_ops_match_torchvision_off_their_edges(op, images):
+    # resampled values can land within float rounding of a quantization edge,
+    # where the two sides may round differently (as RandomSolarize's threshold)
+    assert _mismatch([A.RandomResizedCrop(96), A.ColorJitter(0.4, 0.4), op], images) < 2e-3
+
+
+def test_statistics_in_later_passes_and_containers_match_torchvision(images):
+    # the min/max and histograms are taken in the pass after a blur, after a
+    # contrast change (its own statistic), and only for images that choose them
+    assert _mismatch([A.RandomResizedCrop(96), A.GaussianBlur(5), A.ColorJitter(0.4, 0.6),
+                      A.RandomChoice([A.RandomEqualize(p=1.0), A.RandomAutocontrast(p=1.0),
+                                      A.RandomInvert(p=1.0), A.RandomAdjustSharpness(0.3, p=1.0)]),
+                      A.RandomAutocontrast(p=0.5), A.RandomEqualize(p=0.5)], images) < 2e-3
+
+
+def test_equalize_edge_cases_match_torchvision():
+    # flat (PIL's step 0: the image is left quantized), two values, one
+    # dominant value plus a ramp, and a channel without its maximum bin
+    flat = torch.full((3, 40, 50), 100, dtype=torch.uint8, device="cuda")
+    two = flat.clone()
+    two[:, :, :25] = 30
+    dominant = flat.clone()
+    dominant[0, 0, :] = torch.arange(50, dtype=torch.uint8, device="cuda") * 5
+    ramp = torch.arange(2000, device="cuda").remainder(200).to(torch.uint8).view(1, 40, 50)
+    ramp = torch.cat([ramp, ramp.flip(-1), 255 - ramp])
+    _check([A.RandomEqualize(p=1.0)], torch.stack([flat, two, dominant, ramp]))
+    _check([A.RandomAutocontrast(p=1.0)], torch.stack([flat, two, dominant, ramp]))
+
+
+def test_statistic_ops_with_p_0_leave_images_unchanged(batch):
+    pipe = A.Compose([A.RandomEqualize(p=0.0), A.RandomAutocontrast(p=0.0)],
+                     dtype=torch.float32)
+    assert torch.equal(pipe(batch), batch.float() * (1.0 / 255.0))

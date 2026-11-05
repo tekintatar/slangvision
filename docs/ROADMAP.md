@@ -10,13 +10,17 @@
 - **Since 0.1.0** (unreleased): bfloat16 output, bicubic resizing,
   RandomCrop (padding modes), Pad, RandomVerticalFlip, RandomChoice,
   RandomErasing, MixUp/CutMix, RandomRotation/RandomAffine/RandomPerspective
-  (a warp pass). Next, by usage in common training recipes: per-image
-  statistics and the policy ops, then the policies below.
-- **Phase 2 — policies**, if phase 1 is used: complete RandAugment and
-  TrivialAugmentWide (their geometric ops through the warp pass) and the ops
-  they need (sharpness, posterize, invert,
-  autocontrast, equalize). Decide first whether posterize and
-  equalize match torchvision's float or uint8 paths (RandAugment usually
-  runs on uint8).
+  (a warp pass), RandomInvert/RandomPosterize/RandomAdjustSharpness/
+  RandomAutocontrast/RandomEqualize (torchvision's float behaviour; per-image
+  statistics from pre-passes). Next: the policies below.
+- **Phase 2 — policies**: timm's RandAugment (the variant most recipes
+  use), TrivialAugmentWide, torchvision's RandAugment and AutoAugment, as a
+  per-image choice among the ops above (geometric ones through the warp
+  pass). Float behaviour, decided 2026-11-05: torchvision's uint8 path cannot
+  be matched exactly anyway (its uint8 resize differs); most ops differ by
+  at most 1/255, posterize by its rounding scheme, and equalize can move a
+  value by a level where the two quantize an input differently. timm's SolarizeAdd comes with
+  timm's policies. A rounding-to-uint8 mode only if someone needs exact uint8
+  parity.
 - **Phase 3 — targets**, only if users ask: masks, boxes and keypoints with
   the same per-image values.

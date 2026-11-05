@@ -107,6 +107,12 @@ def ST(k: int) -> str:
     return f"prm(st, b, {k})"
 
 
+def stop(k: int) -> str:
+    """Chain line where the statistic pre-pass of slot group k reads the image:
+    the op that needs the statistic puts it just before itself."""
+    return f"if (upto == {k}) {{ hit = true; return c; }}"
+
+
 class Binding:
     """Where each transform's slots are in one pipeline's parameter table.
     Kept outside the transforms so one transform object can be used in
@@ -118,7 +124,8 @@ class Binding:
         self.stage = 0
         self.geo = 0            # Compose reserves the first slots for geometry
         self.win: dict[int, int] = {}   # window op -> its first geometry slot
-        self.stats_stage: list[int] = []
+        # one per op that needs per-image statistics: (kind, first slot, pass)
+        self.stat_groups: list[tuple[str, int, int]] = []
         self._k: dict[int, int] = {}
         self._st: dict[int, list[int]] = {}
 
@@ -128,12 +135,11 @@ class Binding:
                              "transform for each use")
         self._k[id(t)] = self.nparams
         self.nparams += t._slot_count()
-        stats = []
-        for _ in range(t._stat_count()):
-            stats.append(self.nstats)
-            self.stats_stage.append(self.stage)
-            self.nstats += 1
-        self._st[id(t)] = stats
+        n = t._stat_count()
+        if n:
+            self.stat_groups.append((t._stat_kind, self.nstats, self.stage))
+        self._st[id(t)] = list(range(self.nstats, self.nstats + n))
+        self.nstats += n
         for child in t._children():
             self.bind(child)
 
@@ -150,6 +156,10 @@ class Transform:
 
     #: geometry | flip | pointwise | neighbourhood | warp | normalize | erase
     _kind = "pointwise"
+    #: what the statistic pre-pass computes: "mean" (gray mean, 1 slot),
+    #: "minmax" (per-channel min, then max - min: 6 slots) or "lut" (per-channel
+    #: equalization tables from 256-bin histograms: 768 slots)
+    _stat_kind = "mean"
     same_on_batch = False
 
     def _slot_count(self) -> int:

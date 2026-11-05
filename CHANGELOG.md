@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- `RandomInvert`, `RandomPosterize`, `RandomAdjustSharpness`,
+  `RandomAutocontrast` and `RandomEqualize`, following torchvision's float
+  behaviour (posterize to `floor(value * 2**bits) / 2**bits`; equalize on the
+  image quantized to 256 levels, with PIL's scheme as torchvision uses).
+  Autocontrast and equalize read per-image statistics (min/max, 256-bin
+  histograms) from a pre-pass that skips images they do not apply to.
 - `RandomRotation`, `RandomAffine` and `RandomPerspective`, with
   torchvision's parameters, nearest or bilinear sampling and its fill. Each
   warp runs as its own pass over the image after the resize and crops (about

@@ -75,6 +75,11 @@ the GPU device once per process); later calls reuse the compiled kernels.
 | `RandomGrayscale(p=0.1)` | decided per image; output keeps 3 channels |
 | `GaussianBlur(kernel_size, sigma=(0.1, 2.0))` | sigma drawn per image; the kernel radius must be smaller than the image, as torchvision's reflect padding requires |
 | `RandomSolarize(threshold, p=0.5)` | `threshold` is on the 0-1 scale (0.5, not 128) |
+| `RandomInvert(p=0.5)` | decided per image |
+| `RandomPosterize(bits, p=0.5)` | torchvision's float behaviour: `floor(value * 2**bits) / 2**bits` (its uint8 path keeps the top bits instead: white at 4 bits is 0.9375 here, 240/255 there) |
+| `RandomAdjustSharpness(sharpness_factor, p=0.5)` | decided per image; reads neighbouring pixels, so it starts a pass like a blur |
+| `RandomAutocontrast(p=0.5)` | decided per image; each image's per-channel min and max come from a pre-pass |
+| `RandomEqualize(p=0.5)` | decided per image; as in torchvision for float images, the image is quantized to 256 levels and equalized with PIL's scheme, from per-image histograms built by a pre-pass; values outside [0, 1] (bicubic overshoot) are clamped first, where torchvision's cast is undefined |
 | `Normalize(mean, std)` | comes after everything except `RandomErasing` |
 | `RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0)` | box drawn per image; comes last (after `Normalize`); `value="random"` fills per-pixel N(0, 1) noise from SlangVision's own generator |
 
@@ -339,6 +344,7 @@ imports this module. `pipe.source` shows the generated Slang.
 | float16 output | fp16 rounding of the output, up to about 2e-3 at normalized values |
 | bfloat16 output | torchvision's value rounded to bfloat16 (8 significant bits), as `.to(torch.bfloat16)` rounds it; at most one bfloat16 step away (about 0.016 at normalized values near 2.6) where the two land on either side of a rounding edge, which pipelines with a blur do more often |
 | threshold ops (`RandomSolarize`) | a value landing exactly on the threshold may be inverted on one side and not the other; all other values match |
+| `RandomPosterize`, `RandomEqualize` | step functions: a resampled value within float rounding of a level edge can land on the other side. In one pass, about 1 value in 100,000 (posterize, by one level) and 1 in 30,000 to 1 in 3,000 depending on the ops before it (equalize, by up to 2/255: one moved pixel can shift the lookup table). After a blur, warp or sharpness with float16 output, the float16 image between passes moves more values across edges: about 1 in 1,000 for posterize and 1 in 100 for equalize (by up to 3/255). On images that are not resampled they match exactly |
 | warps with `interpolation="nearest"` | about 1 pixel in 100,000 (1 in 20,000 for `RandomPerspective`) takes the neighbouring source pixel: torchvision computes the sampling positions in float32 with a different rounding, so a position within about 1e-5 pixels of a pixel boundary can go either way. Bilinear warps match like the other ops |
 | float16 output after a warp or blur | the image between passes is float16 too, so colour ops after it can scale that rounding (up to about 8e-3 at normalized values with `ColorJitter(0.4, 0.4, 0.4, 0.1)` after a warp) |
 
@@ -356,6 +362,11 @@ has the reference runs and raw data). How to read them:
   is blurred); its per-image loop is the like-for-like comparison. Kornia
   draws per image in one batched call; its RandomResizedCrop does not
   antialias.
+- Ops that need a per-image statistic pay for a pre-pass over the images
+  they apply to. Added to the ImageNet recipe (RTX PRO 4500, batch 256,
+  1.69 ms in that run; an ad-hoc script, not in the repository), at `p=0.5`: `RandomAutocontrast` +0.55 ms, `RandomEqualize`
+  +0.65 ms (+1.0 ms at `p=1`), `RandomAdjustSharpness` +0.3 ms (its own
+  pass); `RandomInvert` and `RandomPosterize` cost nothing measurable.
 - A warp adds one pass: on an RTX PRO 4500, `RandomRotation(15)` after the
   flip takes the ImageNet recipe from 1.67 to 1.84 ms per batch of 256
   (torchvision per image: 205 to 275 ms; the `rotate` recipe in the
@@ -425,6 +436,6 @@ Training from scratch on its 6,667 trainval images (100 classes), batch
   at 224x224); split larger batches.
 - Run pipelines from one thread: the GPU device is created by, and tied to,
   the thread that runs the first pipeline (SlangPy devices are thread-affine).
-- Not yet: RandAugment, TrivialAugment and the ops they use, masks and
-  boxes. Warps cannot come before a resize or crop, and `RandomRotation`
+- Not yet: the RandAugment, TrivialAugment and AutoAugment policies
+  (their ops are here), masks and boxes. Warps cannot come before a resize or crop, and `RandomRotation`
   has no `expand=True`.

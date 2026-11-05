@@ -18,8 +18,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ._base import P, Binding, NeighbourhoodOp, Transform, _UserOp, lit
-from .transforms import (CenterCrop, ColorJitter, GaussianBlur, Normalize, Pad, RandomAffine,
-                         RandomApply, RandomChoice, RandomCrop, RandomErasing,
+from .transforms import (CenterCrop, ColorJitter, GaussianBlur, Normalize, Pad,
+                         RandomAdjustSharpness, RandomAffine, RandomApply, RandomAutocontrast,
+                         RandomChoice, RandomCrop, RandomEqualize, RandomErasing,
                          RandomHorizontalFlip, RandomPerspective, RandomResizedCrop,
                          RandomRotation, RandomVerticalFlip, Resize, _Window)
 
@@ -74,6 +75,69 @@ struct MidImage : IImage
 """
 
 
+def _stats_kernel(kind: str, k: int, s: int, args: str, inp: str) -> list[str]:
+    """The statistic pre-pass of group k in pass s: one thread per _CHUNK
+    pixels of a row, reading the image just before the op that needs it.
+    Images that do not apply the op stop at their first pixel (`hit` is the
+    same for the whole image); their statistic slots are never read."""
+    def loop(skip: str) -> list[str]:
+        return [f"    for (int j = 0; j < {_CHUNK}; ++j) {{",
+                f"        int x = pix.x * {_CHUNK} + j;",
+                "        if (x >= OW) break;",
+                f"        float4 c = chain_{s}({inp}, p, st, b, {k}, hit);",
+                f"        if (!hit) return{skip};"]
+    head = f"(int3 pix, {args}, Tensor<float, 2> p, Tensor<float, 2> st"
+    if kind == "mean":         # gray sum; Compose divides by the pixel count
+        return [f"float stats_{k}{head}, int OW, int OH)", "{",
+                "    int b = pix.z; int y = pix.y; bool hit; float sum = 0.0;",
+                *loop(" 0.0"), "        sum += gray(c);", "    }", "    return sum;", "}", ""]
+    if kind == "minmax":       # per-channel min and max of these pixels
+        return [f"void stats_{k}{head}, RWTensor<float, 4> part, int OW, int OH)", "{",
+                "    int b = pix.z; int y = pix.y; bool hit;",
+                "    float4 lo = float4(3.0e38); float4 hi = float4(-3.0e38);",
+                *loop(""), "        lo = min(lo, c); hi = max(hi, c);", "    }",
+                "    part[uint4(0, pix.x, y, b)] = lo.x; part[uint4(1, pix.x, y, b)] = lo.y;",
+                "    part[uint4(2, pix.x, y, b)] = lo.z; part[uint4(3, pix.x, y, b)] = hi.x;",
+                "    part[uint4(4, pix.x, y, b)] = hi.y; part[uint4(5, pix.x, y, b)] = hi.z;",
+                "}", ""]
+    # "lut": 256-bin histograms of the quantized channels, for images that apply the op
+    return [f"void stats_{k}{head}, uint64_t hist, int OW, int OH)", "{",
+            "    int b = pix.z; int y = pix.y; bool hit;",
+            "    uint* h = (uint*)(hist) + b * 768;",
+            "    int qx = -1; int qy = -1; int qz = -1; uint nx = 0u; uint ny = 0u; uint nz = 0u;",
+            *loop(""),
+            "        hist_add(h, q255(c.x), qx, nx); hist_add(h + 256, q255(c.y), qy, ny);",
+            "        hist_add(h + 512, q255(c.z), qz, nz);",
+            "    }",
+            "    hist_flush(h, qx, nx); hist_flush(h + 256, qy, ny); hist_flush(h + 512, qz, nz);",
+            "}", ""]
+
+
+def _autocontrast_stats(part: "torch.Tensor", st: "torch.Tensor", k: int) -> None:
+    """torchvision's autocontrast_image: per-channel min and (max - min), with
+    (0, 1) for a constant channel."""
+    lo = part[..., :3].amin((1, 2))
+    hi = part[..., 3:].amax((1, 2))
+    flat = hi == lo
+    st[:, k:k + 3] = lo.masked_fill(flat, 0.0)
+    st[:, k + 3:k + 6] = (hi - lo).masked_fill(flat, 1.0)
+
+
+def _equalize_stats(hist: "torch.Tensor", pixels: int, st: "torch.Tensor", k: int) -> None:
+    """torchvision's equalize_image lookup tables (PIL's scheme), scaled to
+    0-1: an image whose step is 0 keeps its quantized values."""
+    import torch
+
+    hist = hist.long()
+    cum = hist.cumsum(-1)
+    last = cum.argmax(-1, keepdim=True)          # the last non-empty bin
+    step = (pixels - hist.gather(-1, last)) // 255
+    lut = ((cum[..., :-1] + step // 2) // step.clamp(min=1)).clamp(0, 255)
+    lut = torch.cat([torch.zeros_like(lut[..., :1]), lut], -1)
+    lut = torch.where(step != 0, lut, torch.arange(256, device=lut.device))
+    st[:, k:k + 768] = lut.float().mul_(1.0 / 255.0).reshape(-1, 768)
+
+
 def _dtype_name(dtype: Any) -> str:
     name = "float16" if dtype is None else str(dtype).replace("torch.", "")
     if name not in _DTYPES:
@@ -84,7 +148,8 @@ def _dtype_name(dtype: Any) -> str:
 
 _BUILT_IN = (RandomResizedCrop, Resize, CenterCrop, Pad, RandomCrop, RandomHorizontalFlip,
              RandomVerticalFlip, RandomRotation, RandomAffine, RandomPerspective, ColorJitter,
-             GaussianBlur, RandomApply, RandomChoice, Normalize, RandomErasing)
+             GaussianBlur, RandomAdjustSharpness, RandomAutocontrast, RandomEqualize,
+             RandomApply, RandomChoice, Normalize, RandomErasing)
 
 
 def _walk(transforms: Sequence[Transform]):
@@ -340,10 +405,11 @@ class Compose:
             src += [f"float4 input_{s}{head}", "{", *self._flip_lines(s), *gate,
                     *[f"    {ln}" for ln in op._input(b)], "}", ""]  # type: ignore[attr-defined]
 
-        # pointwise chains; `upto` stops at statistic k for its pre-pass
+        # pointwise chains; `upto` stops at statistic group k for its pre-pass
+        # and sets `hit` (left false when this image does not apply that op)
         for s, stage in enumerate(self._stages):
             src += [f"float4 chain_{s}(float4 c, Tensor<float, 2> p, Tensor<float, 2> st, int b,"
-                    " int upto)", "{"]
+                    " int upto, out bool hit)", "{", "    hit = false;"]
             src += [f"    {ln}" for t in stage
                     for ln in (t._post(b) if t._kind in ("neighbourhood", "warp")
                                else t._apply(b))]
@@ -368,24 +434,13 @@ class Compose:
             src += [f"void stage_{s}(int3 pix, {args}, Tensor<float, 2> p, Tensor<float, 2> st,",
                     f"             {dst} dst, int OW, int OH, float4 mean, float4 inv_std)",
                     "{",
-                    "    int b = pix.z; int x = pix.x; int y = pix.y;",
-                    f"    float4 c = chain_{s}({inp}, p, st, b, -1);",
+                    "    int b = pix.z; int x = pix.x; int y = pix.y; bool hit;",
+                    f"    float4 c = chain_{s}({inp}, p, st, b, -1, hit);",
                     f"    {store}",
                     "}", ""]
-            for k, stat_stage in enumerate(b.stats_stage):
-                if stat_stage != s:
-                    continue
-                src += [f"float stats_{k}(int3 pix, {args}, Tensor<float, 2> p, "
-                        "Tensor<float, 2> st, int OW, int OH)",
-                        "{",
-                        "    int b = pix.z; int y = pix.y; float sum = 0.0;",
-                        f"    for (int j = 0; j < {_CHUNK}; ++j) {{",
-                        f"        int x = pix.x * {_CHUNK} + j;",
-                        "        if (x >= OW) break;",
-                        f"        sum += gray(chain_{s}({inp}, p, st, b, {k}));",
-                        "    }",
-                        "    return sum;",
-                        "}", ""]
+            for kind, k, stat_stage in b.stat_groups:
+                if stat_stage == s:
+                    src += _stats_kernel(kind, k, s, args, inp)
         self._sources[layout] = "\n".join(src)
         return self._sources[layout]
 
@@ -467,11 +522,23 @@ class Compose:
                 getattr(m, f"pre_{s}")(spy.grid((B, OH, OW)), cur, params, tmp, OW, OH)
                 cur = tmp
             inputs = (table.ptrs, table.meta) if s == 0 else (cur,)
-            for k, stat_stage in enumerate(self._b.stats_stage):
-                if stat_stage == s:
-                    part = getattr(m, f"stats_{k}")(spy.grid((B, OH, chunks)), *inputs, params,
-                                                    st, OW, OH)
+            for kind, k, stat_stage in self._b.stat_groups:
+                if stat_stage != s:
+                    continue
+                fn, grid = getattr(m, f"stats_{k}"), spy.grid((B, OH, chunks))
+                if kind == "mean":
+                    part = fn(grid, *inputs, params, st, OW, OH)
                     st[:, k] = part.sum((1, 2)) / float(OH * OW)
+                elif kind == "minmax":
+                    part = torch.empty(B, OH, chunks, 6, dtype=torch.float32, device=dev)
+                    fn(grid, *inputs, params, st, part, OW, OH)
+                    _autocontrast_stats(part, st, k)
+                else:
+                    hist = torch.zeros(B, 3, 256, dtype=torch.int32, device=dev)
+                    # a raw address SlangPy does not track: the call is ordered
+                    # on the current stream by its tensor arguments (params, st)
+                    fn(grid, *inputs, params, st, hist.data_ptr(), OW, OH)
+                    _equalize_stats(hist, OH * OW, st, k)
             dst = final if s == len(self._stages) - 1 else torch.empty(B, 3, OH, OW, dtype=dtype,
                                                                        device=dev)
             getattr(m, f"stage_{s}")(spy.grid((B, OH, OW)), *inputs, params, st, dst, OW, OH,

@@ -31,6 +31,10 @@ output and 4e-3 for float16 output, in normalized units.
 | MixUpCutMix | kernel output equals the mixing its parameters describe in batch, pair and elem modes; partners mirrored; CutMix label weight from the clipped box; timm's smoothed labels; switch/prob rates and Beta mean; `cutmix_minmax` box sizes |
 | RandomErasing | reference: constant and per-channel fills after Normalize, without Normalize, two boxes in order, random fill (box compared, noise skipped); noise mean 0 and std 1 with a normal tail, different per image; box area, aspect and rate follow torchvision's sampler; `same_on_batch` gives one box |
 | bfloat16 output | ImageNet and SimCLR recipes within one bfloat16 step of the float32 reference; the one-pass ImageNet recipe rounds like torch for more than 95% of values |
+| RandomInvert, RandomPosterize | reference: exact on images that are not resampled (posterize at 0, 3 and 8 bits); after RandomResizedCrop and ColorJitter, posterize off its level edges (under 2e-3 of values; measured about 5e-6 of pixels) |
+| RandomAdjustSharpness | reference: factors 0 and 2.5 exact on unresampled images; bicubic overshoot clamped at the border; after a crop and ColorJitter, inside RandomApply, inside RandomChoice after a blur |
+| RandomAutocontrast | reference: exact on unresampled images, flat/two-valued/ramp images; after ColorJitter (the min/max read after a contrast change), in RandomChoice after a blur; `p=0` leaves images untouched |
+| RandomEqualize | reference: exact on unresampled images and on flat (PIL's step 0), two-valued, dominant-value and ramp images; after a crop, ColorJitter and a blur, inside RandomChoice (only some images choose it), off quantization edges (under 2e-3 of values; measured about 3e-4 of pixels) |
 | ColorOp, NeighbourhoodOp | reference: user-defined gamma and box blur (reflect, clamp), helper-name isolation, compile-error message |
 
 Also on CUDA: batch tensor, CHW list, HWC list and a non-contiguous HWC view
@@ -115,3 +119,9 @@ validation of newer code.
   pass) and the review fixes, same host and stack (box scripts' `CUDA_PATH`): 216 passed.
   Benchmark: `rotate` recipe, raw data in
   `benchmarks/results/rtx_pro_4500_rotate_2026-11-05.json`.
+- 2026-11-05, RandomInvert/RandomPosterize/RandomAdjustSharpness/
+  RandomAutocontrast/RandomEqualize and statistic pre-passes by kind, same
+  host and stack (box scripts' `CUDA_PATH`): 238 passed. Costs in the
+  ImageNet recipe measured with an ad-hoc script (median of 30 synced calls,
+  batch 256 of 512x384 photo-like images). Review fixes (sharpness clamps
+  its border; float16 step-op rates measured after a blur): 239 passed.

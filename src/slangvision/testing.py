@@ -111,6 +111,14 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
             if t.ranges[op]:
                 img = fns[op](img, row[k + op])
         return img
+    if isinstance(t, (T.RandomAutocontrast, T.RandomEqualize, T.RandomAdjustSharpness)):
+        if row[b.k(t)] <= 0.5:
+            return img
+        if isinstance(t, T.RandomAutocontrast):
+            return F.autocontrast(img)
+        if isinstance(t, T.RandomEqualize):
+            return F.equalize(img)
+        return F.adjust_sharpness(img, t.sharpness_factor)
     if isinstance(t, T.GaussianBlur):
         s = row[b.k(t)]
         return F.gaussian_blur(img, list(t.kernel_size), [s, s])
@@ -144,6 +152,10 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
             return F.rgb_to_grayscale(img, num_output_channels=3)
         if isinstance(t, T.RandomSolarize):
             return F.solarize(img, values["threshold"])
+        if isinstance(t, T.RandomInvert):
+            return F.invert(img)
+        if isinstance(t, T.RandomPosterize):
+            return F.posterize(img, t.bits)
         return t.reference(img, **values)
     raise TypeError(f"no torch reference for {type(t).__name__}")
 

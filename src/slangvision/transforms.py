@@ -9,7 +9,7 @@ import math
 import numbers
 from typing import Any, Sequence
 
-from ._base import ST, Binding, ColorOp, P, Transform, Uniform, _probability, lit
+from ._base import ST, Binding, ColorOp, P, Transform, Uniform, _probability, lit, stop
 
 
 def _size2(size: Any, name: str) -> tuple[int, int]:
@@ -580,8 +580,7 @@ class ColorJitter(Transform):
             cases.append(f"if (op == 0) c = brightness(c, {P(k)});")
         if self.ranges[1]:
             st = b.stats(self)[0]
-            cases.append(f"if (op == 1) {{ if (upto == {st}) return c; "
-                         f"c = contrast(c, {P(k + 1)}, {ST(st)}); }}")
+            cases.append(f"if (op == 1) {{ {stop(st)} c = contrast(c, {P(k + 1)}, {ST(st)}); }}")
         if self.ranges[2]:
             cases.append(f"if (op == 2) c = saturation(c, {P(k + 2)});")
         if self.ranges[3]:
@@ -622,6 +621,91 @@ class RandomSolarize(ColorOp):
             raise ValueError(f"RandomSolarize: threshold is on the 0-1 scale, got {threshold} "
                              "(divide a uint8 threshold by 255)")
         self.params = {"threshold": float(threshold)}
+
+
+class RandomInvert(ColorOp):
+    """torchvision RandomInvert: 1 - value."""
+
+    slang = "float4 apply(float4 c) { return float4(1.0 - c.x, 1.0 - c.y, 1.0 - c.z, 0.0); }"
+
+    def __init__(self, p: float = 0.5, same_on_batch: bool = False):
+        super().__init__(p, same_on_batch)
+
+
+class RandomPosterize(ColorOp):
+    """torchvision RandomPosterize on float images: ``2**bits`` levels,
+    ``floor(value * levels) / levels``. (torchvision's uint8 path keeps the top
+    ``bits`` bits instead, which gives slightly different values, e.g. 240/255
+    rather than 15/16 for white at 4 bits.)"""
+
+    slang = """
+    float4 apply(float4 c, float n)
+    {
+        float top = n - 1.0;
+        float k = 1.0 / n;
+        return float4(clamp(floor(c.x * n), 0.0, top) * k, clamp(floor(c.y * n), 0.0, top) * k,
+                      clamp(floor(c.z * n), 0.0, top) * k, 0.0);
+    }"""
+
+    bits: int
+
+    def __init__(self, bits: int, p: float = 0.5, same_on_batch: bool = False):
+        super().__init__(p, same_on_batch)
+        if not (isinstance(bits, numbers.Integral) and not isinstance(bits, bool)
+                and 0 <= bits <= 8):
+            raise ValueError(f"RandomPosterize: bits must be an int in [0, 8], got {bits!r}")
+        self.bits = int(bits)
+        self.params = {"levels": float(1 << self.bits)}
+
+    def __repr__(self) -> str:
+        return f"RandomPosterize(bits={self.bits}, p={self.p})"
+
+
+class _Gated(Transform):
+    """A built-in op applied with probability p, decided per image."""
+
+    def __init__(self, p: float = 0.5, same_on_batch: bool = False):
+        self.p = _probability(p)
+        self.same_on_batch = bool(same_on_batch)
+
+    def _slot_count(self) -> int:
+        return 1
+
+    def _sample(self, b: Binding, rng: str) -> list[str]:
+        return [f"p[uint2({b.k(self)}, b)] = rnd({rng}) < {lit(self.p)} ? 1.0 : 0.0;"]
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(p={self.p})"
+
+
+class RandomAutocontrast(_Gated):
+    """torchvision RandomAutocontrast: stretch each channel to [0, 1] using the
+    image's own min and max (a pre-pass computes them per image)."""
+
+    _stat_kind = "minmax"
+
+    def _stat_count(self) -> int:
+        return 6
+
+    def _apply(self, b: Binding) -> list[str]:
+        st = b.stats(self)[0]
+        args = ", ".join(ST(st + i) for i in range(6))
+        return [f"if ({P(b.k(self))} > 0.5) {{ {stop(st)} c = autocontrast(c, {args}); }}"]
+
+
+class RandomEqualize(_Gated):
+    """torchvision RandomEqualize: histogram equalization per channel, on the
+    image quantized to 256 levels as torchvision does for float images (so the
+    output has 256 levels). A pre-pass builds each image's histograms."""
+
+    _stat_kind = "lut"
+
+    def _stat_count(self) -> int:
+        return 768
+
+    def _apply(self, b: Binding) -> list[str]:
+        st = b.stats(self)[0]
+        return [f"if ({P(b.k(self))} > 0.5) {{ {stop(st)} c = equalize(c, st, b, {st}); }}"]
 
 
 # ------------------------------------------------------- neighbourhood ops
@@ -672,6 +756,40 @@ class GaussianBlur(Transform):
 
     def __repr__(self) -> str:
         return f"GaussianBlur(kernel_size={self.kernel_size}, sigma={self.sigma})"
+
+
+class RandomAdjustSharpness(_Gated):
+    """torchvision RandomAdjustSharpness: blend with torchvision's 3x3
+    smoothing kernel (border pixels only clamped) by ``sharpness_factor`` (0
+    smooths, 1 keeps, 2 sharpens), with probability ``p``."""
+
+    _kind = "neighbourhood"
+
+    def __init__(self, sharpness_factor: float, p: float = 0.5, same_on_batch: bool = False):
+        super().__init__(p, same_on_batch)
+        self.sharpness_factor = float(sharpness_factor)
+        if not (math.isfinite(self.sharpness_factor) and self.sharpness_factor >= 0):
+            raise ValueError("RandomAdjustSharpness: sharpness_factor must be non-negative, "
+                             f"got {sharpness_factor}")
+
+    def _pre(self, b: Binding) -> list[str] | None:
+        return None
+
+    def _input(self, b: Binding) -> list[str]:
+        return [
+            "float4 c = load_mid(src, x, y, b);",
+            f"if (!({P(b.k(self))} > 0.5)) return c;",
+            # torchvision clamps the whole output, the unblended border included
+            "if (x == 0 || y == 0 || x == OW - 1 || y == OH - 1) return clamp01(c);",
+            "float4 ring = float4(0.0);",
+            "for (int dy = -1; dy <= 1; ++dy)",
+            "    for (int dx = -1; dx <= 1; ++dx)",
+            "        if (dx != 0 || dy != 0) ring += load_mid(src, x + dx, y + dy, b);",
+            "float4 blur = ring * (1.0 / 13.0) + c * (5.0 / 13.0);",
+            f"return clamp01(c + {lit(1.0 - self.sharpness_factor)} * (blur - c));"]
+
+    def __repr__(self) -> str:
+        return f"RandomAdjustSharpness(sharpness_factor={self.sharpness_factor}, p={self.p})"
 
 
 # --------------------------------------------------------------- others
