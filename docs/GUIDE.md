@@ -499,6 +499,50 @@ references (torchvision for the built-in transforms, your `reference` for
 your ops) and returns the largest absolute difference. Training never
 imports this module. `pipe.source` shows the generated Slang.
 
+## Coming from Albumentations
+
+SlangVision follows torchvision's semantics, not Albumentations': there is
+no Albumentations compatibility mode, and masks, boxes and keypoints are not
+supported yet. The image transforms people use most from Albumentations
+mostly have a counterpart. Defaults below are those of Albumentations 2.0.8,
+its last release (the repository is archived).
+
+| Albumentations | SlangVision | notes |
+|---|---|---|
+| `HorizontalFlip`, `VerticalFlip` | `RandomHorizontalFlip`, `RandomVerticalFlip` | the same |
+| `Rotate(limit=90)` | `RandomRotation(90, interpolation="bilinear")` | constant fill only (Albumentations' default border too; its reflect and replicate borders have no counterpart) |
+| `ShiftScaleRotate()`, `Affine` | `RandomAffine(45, translate=(0.0625, 0.0625), scale=(0.9, 1.1), interpolation="bilinear")` | the line shows ShiftScaleRotate's defaults; constant fill only |
+| `RandomResizedCrop`, `RandomCrop`, `CenterCrop`, `Resize` | the same names | sizes as `(height, width)`; Albumentations resizes with OpenCV, which does not antialias when downscaling: `antialias=False` is closer |
+| `GaussianBlur(sigma_limit=(0.5, 3.0))` | `GaussianBlur(19, sigma=(0.5, 3.0))` | one kernel size for every image, large enough for the largest sigma, where Albumentations sizes each kernel from its sigma |
+| `Blur(blur_limit=(3, 7))` | `BoxBlur` in [Custom ops](#custom-ops) (with `A.Choice([1, 2, 3])`) | |
+| `GaussNoise(std_range=(0.2, 0.44))` | `GaussianNoise(sigma=0.3)` | a fixed sigma, where Albumentations draws one per image; `RandomChoice` over a few `GaussianNoise` sigmas comes close |
+| `CoarseDropout(num_holes_range=(1, 2), hole_height_range=(0.1, 0.2), hole_width_range=(0.1, 0.2))` | about one `RandomErasing(p, scale=(0.01, 0.04), ratio=(0.5, 2.0))` per hole | after `Normalize`, so `value=0` is the mean colour: for black, pass `value=[-m / s for m, s in zip(mean, std)]` |
+| `ColorJitter` | `ColorJitter` | close: Albumentations works on uint8 with OpenCV's HSV |
+| `ToGray` | `RandomGrayscale(p=0.5)` | |
+| `Normalize` | `Normalize(mean, std)` | the same with values on the 0-1 scale |
+| `RandomBrightnessContrast` | the `ColorOp` below | |
+| `RandomGamma(gamma_limit=(80, 120))` | `RandomGamma` in [Custom ops](#custom-ops), with `A.Uniform(0.8, 1.2)` | |
+| `CLAHE`, `MedianBlur`, `HueSaturationValue` | not available | |
+
+Albumentations' `RandomBrightnessContrast` (default `brightness_by_max=True`)
+scales by `alpha` and adds `beta`:
+
+```python
+import slangvision as A
+
+class RandomBrightnessContrast(A.ColorOp):
+    """alpha * x + beta, alpha in 1 ± contrast_limit, beta in ± brightness_limit."""
+    slang = "float4 apply(float4 c, float alpha, float beta) { return clamp01(alpha * c + beta); }"
+
+    def __init__(self, brightness_limit=0.2, contrast_limit=0.2, p=0.5):
+        super().__init__(p)
+        self.params = {"alpha": A.Uniform(1 - contrast_limit, 1 + contrast_limit),
+                       "beta": A.Uniform(-brightness_limit, brightness_limit)}
+
+    def reference(self, img, alpha, beta):
+        return (alpha * img + beta).clamp(0, 1)
+```
+
 ## Accuracy
 
 | | difference from torchvision's float functionals |
