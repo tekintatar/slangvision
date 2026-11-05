@@ -9,6 +9,21 @@ float4 saturation(float4 c, float f) { return clamp01(f * c + (1.0 - f) * gray(c
 
 float4 invert(float4 c) { return float4(1.0 - c.x, 1.0 - c.y, 1.0 - c.z, 0.0); }
 
+// Channel order i of 012, 021, 102, 120, 201, 210 (output channel j reads
+// input channel perm[j], as torchvision's permute_channels).
+float4 permute_channels(float4 c, int i)
+{
+    switch (i)
+    {
+    case 0: return c;
+    case 1: return float4(c.x, c.z, c.y, 0.0);
+    case 2: return float4(c.y, c.x, c.z, 0.0);
+    case 3: return float4(c.y, c.z, c.x, 0.0);
+    case 4: return float4(c.z, c.x, c.y, 0.0);
+    default: return float4(c.z, c.y, c.x, 0.0);
+    }
+}
+
 float4 solarize(float4 c, float t)
 {
     return float4(c.x >= t ? 1.0 - c.x : c.x, c.y >= t ? 1.0 - c.y : c.y,

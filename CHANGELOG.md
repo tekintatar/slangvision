@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- `RandomPhotometricDistort` (torchvision's SSD colour distortion, used by its
+  detection and segmentation recipes), `RandomChannelPermutation` and
+  `Grayscale`; with `num_output_channels=1` (torchvision's default) the
+  pipeline returns one channel. `Normalize` accepts one mean and std for
+  every channel.
 - `slangvision.sr.DiffJPEG`: BasicSR's DiffJPEG (Real-ESRGAN's JPEG
   degradation), the same values up to float rounding, per-image quality:
   0.30 ms instead of 1.5 ms per batch of 12 at 400x400 (RTX PRO 4500), 1.0

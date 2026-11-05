@@ -37,6 +37,9 @@ def max_reference_error(pipeline: Compose, images: Any, layout: str = "chw") -> 
     output units (normalized, if the pipeline ends with Normalize)."""
     out, params = pipeline._run(images, layout)
     ref = _replay(pipeline, images, params, layout)
+    if out.shape != ref.shape:
+        raise ValueError(f"output shape {tuple(out.shape)} differs from the references' "
+                         f"{tuple(ref.shape)}")
     keep = ~ref.isnan()         # random noise (GaussianNoise, RandomErasing) is not replayed
     return float((out.float() - ref)[keep].abs().max()) if keep.any() else float("nan")
 
@@ -99,7 +102,7 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
         if row[k] <= 0.5:
             return img
         raw = row[k + 9:k + 9 + t._raw]
-        mode, fill = _MODES[t.interpolation], list(t.fill)
+        mode, fill = _MODES[t.interpolation], list(t.fill)[:img.shape[0]]
         center = None if t.center is None else list(t.center)
         if isinstance(t, T.RandomRotation):
             return F.rotate(img, raw[0], interpolation=mode, center=center, fill=fill)
@@ -120,6 +123,26 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
             if t.ranges[op]:
                 img = fns[op](img, row[k + op])
         return img
+    if isinstance(t, T.RandomPhotometricDistort):
+        k = b.k(t)
+        f = int(row[k + 4])
+        if f & 1:                   # the sampler sets no bit for a disabled range
+            img = F.adjust_brightness(img, row[k])
+        if f & 2 and f & 16:
+            img = F.adjust_contrast(img, row[k + 1])
+        if f & 4:
+            img = F.adjust_saturation(img, row[k + 2])
+        if f & 8:
+            img = F.adjust_hue(img, row[k + 3])
+        if f & 2 and not f & 16:
+            img = F.adjust_contrast(img, row[k + 1])
+        if f & 32 and img.shape[0] == 3:    # one channel: torchvision's randperm(1)
+            img = F.permute_channels(img, list(T._PERMUTATIONS[int(row[k + 5])]))
+        return img
+    if isinstance(t, T.RandomChannelPermutation):
+        if img.shape[0] == 1:
+            return img
+        return F.permute_channels(img, list(T._PERMUTATIONS[int(row[b.k(t)])]))
     if isinstance(t, (T.RandAugment, T.TrivialAugmentWide, T.AutoAugment)):
         return _torchvision_policy(t, b, img, row)
     if isinstance(t, T.TimmRandAugment):
@@ -159,17 +182,20 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
             if t.value is None:     # noise cannot be replayed: max_reference_error skips NaN
                 img[:, top:top + h, left:left + w] = float("nan")
             else:
-                img[:, top:top + h, left:left + w] = torch.tensor(t.value,
-                                                                 device=img.device)[:, None, None]
+                value = torch.tensor(t.value[:img.shape[0]], device=img.device)
+                img[:, top:top + h, left:left + w] = value[:, None, None]
         return img
-    if isinstance(t, T.Normalize):
-        return F.normalize(img, list(t.mean), list(t.std))
+    if isinstance(t, T.Normalize):        # one channel after Grayscale(1)
+        n = img.shape[0]
+        return F.normalize(img, list(t.mean[:n]), list(t.std[:n]))
     if isinstance(t, _UserOp):
         if not t._applied(b, row):
             return img
         values = t._values(b, row)
         if isinstance(t, T.RandomGrayscale):
             return F.rgb_to_grayscale(img, num_output_channels=3)
+        if isinstance(t, T.Grayscale):
+            return F.rgb_to_grayscale(img, num_output_channels=t.num_output_channels)
         if isinstance(t, T.RandomSolarize):
             return F.solarize(img, values["threshold"])
         if isinstance(t, T.RandomInvert):

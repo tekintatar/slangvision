@@ -24,6 +24,9 @@ output and 4e-3 for float16 output, in normalized units.
 | ColorJitter | reference: each factor alone, all four with random order, inside RandomApply, after a blur (mean of the blurred image) |
 | RandomApply | reference: colour ops, one blur |
 | RandomGrayscale | reference |
+| Grayscale | reference: 3 channels after ColorJitter; 1 channel (a `(B, 1, H, W)` output) before ColorJitter and a one-value Normalize, and before RandomErasing |
+| RandomPhotometricDistort | reference: defaults after RandomResizedCrop, `p=1` with Normalize, wide ranges with saturation off, inside RandomApply and after a warp; sampled frequencies of each op, contrast-first and the six channel orders |
+| RandomChannelPermutation | reference after RandomResizedCrop with Normalize |
 | GaussianBlur | reference: square and `(kx, ky)` kernels, fixed and random sigma, two blurs in one pipeline |
 | RandomSolarize | reference off the threshold; values exactly on it may differ (checked to be on it) |
 | Normalize | reference (in every recipe) |

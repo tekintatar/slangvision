@@ -73,6 +73,9 @@ the GPU device once per process); later calls reuse the compiled kernels.
 | `RandomApply(transforms, p=0.5)` | decided per image; holds colour ops, or exactly one blur, warp or `NeighbourhoodOp` (not flips: they have their own `p`) |
 | `RandomChoice(transforms, p=None)` | chosen per image (weights `p`, equal by default); holds colour ops and at most one blur, warp or `NeighbourhoodOp` |
 | `RandomGrayscale(p=0.1)` | decided per image; output keeps 3 channels |
+| `Grayscale(num_output_channels=1)` | with 1 (torchvision's default) the pipeline returns `(B, 1, H, W)`; it must then be at the top level (not in `RandomApply` or `RandomChoice`), and `Normalize` or a `RandomErasing` value after it takes one value, a warp's `fill` one value. Ops after it see three equal channels and the output keeps the first: contrast and grayscale use torchvision's gray weights, which sum to 0.9999, so they differ from torchvision's one-channel result by up to 1e-4 |
+| `RandomPhotometricDistort(brightness=(0.875, 1.125), contrast=(0.5, 1.5), saturation=(0.5, 1.5), hue=(-0.05, 0.05), p=0.5)` | which ops apply, their factors, whether contrast comes before saturation or after hue, and the channel order drawn per image |
+| `RandomChannelPermutation()` | one of the six channel orders drawn per image |
 | `GaussianBlur(kernel_size, sigma=(0.1, 2.0))` | sigma drawn per image; the kernel radius must be smaller than the image, as torchvision's reflect padding requires |
 | `RandomSolarize(threshold, p=0.5)` | `threshold` is on the 0-1 scale (0.5, not 128) |
 | `RandomInvert(p=0.5)` | decided per image |
@@ -84,7 +87,7 @@ the GPU device once per process); later calls reuse the compiled kernels.
 | `AutoAugment(policy="imagenet", interpolation="nearest", fill=None)` | torchvision's: one of the policy's 25 sub-policies per image (`"imagenet"`, `"cifar10"`, `"svhn"` or `AutoAugmentPolicy`); two passes |
 | `TimmRandAugment(config="rand-m9-mstd0.5-inc1", interpolation="random", fill=(124, 116, 104) / 255, translate_pct=0.45)` | timm's RandAugment with Pillow's ops (see below); ops, magnitudes, signs and interpolation drawn per image; comes after the resize and crops |
 | `RandomEqualize(p=0.5)` | decided per image; as in torchvision for float images, the image is quantized to 256 levels and equalized with PIL's scheme, from per-image histograms built by a pre-pass; values outside [0, 1] (bicubic overshoot) are clamped first, where torchvision's cast is undefined |
-| `Normalize(mean, std)` | comes after everything except `RandomErasing` |
+| `Normalize(mean, std)` | comes after everything except `RandomErasing`; one value applies to every channel |
 | `GaussianNoise(mean=0.0, sigma=0.1, clip=True)` | adds `mean + sigma * N(0, 1)`, new for every pixel, channel and image (SlangVision's own generator, so not torch's values), then clamps with `clip=True`; a colour op, before `Normalize` |
 | `RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0)` | box drawn per image; comes last (after `Normalize`); `value="random"` fills per-pixel N(0, 1) noise from SlangVision's own generator |
 

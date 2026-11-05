@@ -93,8 +93,8 @@ versions it saw.
 
 `RandomResizedCrop`, `Resize`, `CenterCrop`, `RandomCrop`, `Pad`,
 `RandomHorizontalFlip`, `RandomVerticalFlip`, `RandomRotation`,
-`RandomAffine`, `RandomPerspective`, `ColorJitter`,
-`RandomGrayscale`, `GaussianBlur`, `GaussianNoise`, `RandomSolarize`, `RandomInvert`,
+`RandomAffine`, `RandomPerspective`, `ColorJitter`, `RandomPhotometricDistort`,
+`RandomChannelPermutation`, `Grayscale`, `RandomGrayscale`, `GaussianBlur`, `GaussianNoise`, `RandomSolarize`, `RandomInvert`,
 `RandomPosterize`, `RandomAdjustSharpness`, `RandomAutocontrast`,
 `RandomEqualize`, `RandAugment`, `TrivialAugmentWide`, `AutoAugment`, `RandomApply`,
 `RandomChoice`, `Normalize` and

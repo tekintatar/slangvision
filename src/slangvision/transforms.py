@@ -30,21 +30,21 @@ def _size2(size: Any, name: str) -> tuple[int, int]:
 
 
 def _range(value: Any, name: str, center: float, bound: tuple[float, float],
-           around_center: bool) -> tuple[float, float] | None:
+           around_center: bool, owner: str = "ColorJitter") -> tuple[float, float] | None:
     """torchvision ColorJitter range checking; None when the op is a no-op."""
     if isinstance(value, numbers.Real):
         value = float(value)
         if value < 0:
-            raise ValueError(f"ColorJitter: {name} must be non-negative, got {value}")
+            raise ValueError(f"{owner}: {name} must be non-negative, got {value}")
         lo, hi = center - value, center + value
         if around_center:
             lo = max(lo, 0.0)
     elif isinstance(value, Sequence) and len(value) == 2:
         lo, hi = float(value[0]), float(value[1])
     else:
-        raise ValueError(f"ColorJitter: {name} must be a number or (min, max), got {value!r}")
+        raise ValueError(f"{owner}: {name} must be a number or (min, max), got {value!r}")
     if not (math.isfinite(hi) and bound[0] <= lo <= hi <= bound[1]):
-        raise ValueError(f"ColorJitter: {name} range ({lo}, {hi}) must be finite and lie "
+        raise ValueError(f"{owner}: {name} range ({lo}, {hi}) must be finite and lie "
                          f"in {bound}")
     return None if lo == hi == center else (lo, hi)
 
@@ -601,6 +601,89 @@ class ColorJitter(Transform):
         return f"ColorJitter(ranges={self.ranges})"
 
 
+class RandomPhotometricDistort(Transform):
+    """torchvision RandomPhotometricDistort (SSD's colour distortion):
+    brightness, contrast, saturation and hue, each applied with probability
+    ``p`` and a factor from its (min, max) range; contrast comes before
+    saturation or after hue (even odds); then, with probability ``p``, one of
+    the six channel orders. All drawn per image."""
+
+    def __init__(self, brightness: tuple[float, float] = (0.875, 1.125),
+                 contrast: tuple[float, float] = (0.5, 1.5),
+                 saturation: tuple[float, float] = (0.5, 1.5),
+                 hue: tuple[float, float] = (-0.05, 0.05), p: float = 0.5,
+                 same_on_batch: bool = False):
+        name = "RandomPhotometricDistort"
+        self.ranges = []
+        for value, label, center, bound in ((brightness, "brightness", 1.0, (0.0, math.inf)),
+                                            (contrast, "contrast", 1.0, (0.0, math.inf)),
+                                            (saturation, "saturation", 1.0, (0.0, math.inf)),
+                                            (hue, "hue", 0.0, (-0.5, 0.5))):
+            if not (isinstance(value, Sequence) and len(value) == 2):
+                raise ValueError(f"{name}: {label} must be (min, max), got {value!r}")
+            self.ranges.append(_range(value, label, center, bound, False, name))
+        self.p = _probability(p)
+        self.same_on_batch = bool(same_on_batch)
+
+    def _slot_count(self) -> int:
+        return 6        # four factors, which ops apply (bits), the channel order
+
+    def _stat_count(self) -> int:
+        return 1 if self.ranges[1] else 0
+
+    def _sample(self, b: Binding, rng: str) -> list[str]:
+        k = b.k(self)
+        lines = [f"p[uint2({k + i}, b)] = urand({rng}, {lit(r[0])}, {lit(r[1])});" if r
+                 else f"p[uint2({k + i}, b)] = 0.0;" for i, r in enumerate(self.ranges)]
+        # bits 0-3: op i applies; 4: contrast before saturation; 5: permute
+        bits = [f"if (rnd({rng}) < {lit(self.p)}) f |= {1 << i};"
+                for i, r in enumerate(self.ranges) if r]
+        return lines + ["{ int f = 0;", *bits,
+                        f"if (rnd({rng}) < 0.5) f |= 16;",
+                        f"if (rnd({rng}) < {lit(self.p)}) f |= 32;",
+                        f"p[uint2({k + 4}, b)] = float(f);",
+                        f"p[uint2({k + 5}, b)] = float(irand({rng}, 6)); }}"]
+
+    def _apply(self, b: Binding) -> list[str]:
+        k = b.k(self)
+        contrast = ""
+        if self.ranges[1]:
+            st = b.stats(self)[0]
+            contrast = f"{{ {stop(st)} c = contrast(c, {P(k + 1)}, {ST(st)}); }}"
+        lines = [f"{{ int f = int({P(k + 4)});",
+                 f"  if ((f & 1) != 0) c = brightness(c, {P(k)});" if self.ranges[0] else "",
+                 f"  if ((f & 18) == 18) {contrast}" if contrast else "",
+                 f"  if ((f & 4) != 0) c = saturation(c, {P(k + 2)});" if self.ranges[2] else "",
+                 f"  if ((f & 8) != 0) c = hue(c, {P(k + 3)});" if self.ranges[3] else "",
+                 f"  if ((f & 18) == 2) {contrast}" if contrast else "",
+                 f"  if ((f & 32) != 0) c = permute_channels(c, int({P(k + 5)})); }}"]
+        return [ln for ln in lines if ln]
+
+    def __repr__(self) -> str:
+        return f"RandomPhotometricDistort(ranges={self.ranges}, p={self.p})"
+
+
+class RandomChannelPermutation(Transform):
+    """torchvision RandomChannelPermutation: one of the six channel orders
+    (the identity included), drawn per image."""
+
+    def __init__(self, same_on_batch: bool = False):
+        self.same_on_batch = bool(same_on_batch)
+
+    def _slot_count(self) -> int:
+        return 1
+
+    def _sample(self, b: Binding, rng: str) -> list[str]:
+        return [f"p[uint2({b.k(self)}, b)] = float(irand({rng}, 6));"]
+
+    def _apply(self, b: Binding) -> list[str]:
+        return [f"c = permute_channels(c, int({P(b.k(self))}));"]
+
+
+#: permute_channels' channel orders, by index
+_PERMUTATIONS = ((0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0))
+
+
 class RandomGrayscale(ColorOp):
     """torchvision RandomGrayscale (three equal output channels)."""
 
@@ -608,6 +691,26 @@ class RandomGrayscale(ColorOp):
 
     def __init__(self, p: float = 0.1, same_on_batch: bool = False):
         super().__init__(p, same_on_batch)
+
+
+class Grayscale(ColorOp):
+    """torchvision Grayscale. With ``num_output_channels=1`` (torchvision's
+    default) the pipeline returns ``(B, 1, H, W)``: it must sit at the top
+    level of the pipeline, and a Normalize or RandomErasing value after it
+    takes one value, a fill one value or three equal ones. Colour ops after
+    it see three equal channels, and the output keeps the first."""
+
+    slang = RandomGrayscale.slang
+
+    def __init__(self, num_output_channels: int = 1):
+        super().__init__(1.0)
+        if num_output_channels not in (1, 3) or isinstance(num_output_channels, bool):
+            raise ValueError(f"Grayscale: num_output_channels must be 1 or 3, got "
+                             f"{num_output_channels!r}")
+        self.num_output_channels = int(num_output_channels)
+
+    def __repr__(self) -> str:
+        return f"Grayscale(num_output_channels={self.num_output_channels})"
 
 
 class RandomSolarize(ColorOp):
@@ -1407,15 +1510,18 @@ class RandomChoice(Transform):
 
 
 class Normalize(Transform):
-    """torchvision Normalize; comes after every transform except RandomErasing."""
+    """torchvision Normalize; comes after every transform except RandomErasing.
+    One mean or std value applies to every channel."""
 
     _kind = "normalize"
 
     def __init__(self, mean: Sequence[float], std: Sequence[float]):
         self.mean = tuple(float(m) for m in mean)
         self.std = tuple(float(s) for s in std)
-        if len(self.mean) != 3 or len(self.std) != 3:
-            raise ValueError("Normalize: mean and std need three values (RGB)")
+        if len(self.mean) not in (1, 3) or len(self.std) not in (1, 3):
+            raise ValueError("Normalize: mean and std need one value or three (RGB)")
+        self._channels = max(len(self.mean), len(self.std))     # as given
+        self.mean, self.std = self.mean * (3 // len(self.mean)), self.std * (3 // len(self.std))
         if any(s == 0 for s in self.std):
             raise ValueError("Normalize: std must be non-zero")
 
@@ -1484,6 +1590,7 @@ class RandomErasing(Transform):
             self.value: tuple[float, float, float] | None = None
         else:
             vals = [value] if isinstance(value, numbers.Real) else list(value)
+            self._channels = len(vals)      # as given
             if len(vals) == 1:
                 vals = vals * 3
             if len(vals) != 3 or not all(isinstance(v, numbers.Real) and math.isfinite(v)

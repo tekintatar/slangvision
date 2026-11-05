@@ -1284,3 +1284,65 @@ def test_diff_jpeg_libjpeg_is_closer_to_pillow(batch):
     j(x, 50)
     j.libjpeg = True
     assert torch.equal(j(x, 50), lj(x, 50))
+
+
+# ------------------------------------------------- photometric distortion
+@pytest.mark.parametrize("transforms", [
+    [A.RandomResizedCrop(96), A.RandomPhotometricDistort()],
+    [A.RandomResizedCrop(64), A.RandomPhotometricDistort(p=1.0), A.Normalize(MEAN, STD)],
+    [A.RandomResizedCrop(64),
+     A.RandomPhotometricDistort(brightness=(0.5, 1.5), contrast=(0.2, 1.8), saturation=(1, 1),
+                                hue=(-0.3, 0.3), p=0.8)],
+    [A.RandomResizedCrop(64), A.RandomChannelPermutation(), A.Normalize(MEAN, STD)],
+    [A.RandomResizedCrop(64), A.ColorJitter(0.4, 0.4), A.Grayscale(num_output_channels=3),
+     A.Normalize(MEAN, STD)],
+    # after a one-channel Grayscale, torchvision's contrast takes the channel's
+    # mean, ours the gray of three equal channels (weights sum to 0.9999)
+    [A.RandomResizedCrop(64), A.Grayscale(), A.ColorJitter(0.4, 0.4), A.Normalize([0.5], [0.5])],
+    [A.RandomResizedCrop(64), A.Grayscale(), A.Normalize([0.5], [0.25]),
+     A.RandomErasing(p=1.0, value=0.0)],
+    [A.RandomResizedCrop(64), A.Grayscale(), A.RandomPhotometricDistort(p=1.0),
+     A.RandomChannelPermutation(), A.RandomRotation(30, fill=0.5)],
+    [A.RandomResizedCrop(64), A.RandomApply([A.RandomPhotometricDistort(p=1.0)], p=0.5),
+     A.RandomRotation(20), A.RandomPhotometricDistort()],
+], ids=lambda ts: "+".join(type(t).__name__ for t in ts))
+def test_photometric_ops_match_torchvision(transforms, images):
+    _check(transforms, images)
+
+
+def test_one_channel_grayscale_output(batch):
+    out = A.Compose([A.Grayscale(), A.Normalize([0.5], [0.5])])(batch)
+    assert out.shape == (batch.shape[0], 1, *batch.shape[2:]) and out.is_contiguous()
+    assert A.Compose([A.Grayscale(num_output_channels=3)])(batch).shape == batch.shape
+
+
+def test_photometric_ops_share_values_on_the_batch(batch):
+    shared = [A.RandomPhotometricDistort(same_on_batch=True),
+              A.RandomChannelPermutation(same_on_batch=True)]
+    pipe = A.Compose(shared)
+    _, params = pipe._run(batch, "chw")
+    for t, n in zip(shared, (6, 1)):
+        rows = params[:, pipe._b.k(t):pipe._b.k(t) + n]
+        assert (rows == rows[0]).all()
+
+
+def test_photometric_draws_follow_torchvision():
+    """Each op applies with probability p, contrast comes first half the
+    time and the six channel orders are equally likely."""
+    t = A.RandomPhotometricDistort(p=0.3)
+    pipe = A.Compose([t])
+    imgs = torch.zeros(20000, 3, 2, 2, dtype=torch.uint8, device="cuda")
+    torch.manual_seed(0)
+    _, params = pipe._run(imgs, "chw")
+    k = pipe._b.k(t)
+    flags = params[:, k + 4].long()
+    n = len(imgs)
+    sd = (0.3 * 0.7 / n) ** 0.5
+    for bit in (0, 1, 2, 3, 5):
+        assert abs(((flags >> bit) & 1).float().mean().item() - 0.3) < 5 * sd
+    assert abs(((flags >> 4) & 1).float().mean().item() - 0.5) < 5 * (0.25 / n) ** 0.5
+    counts = torch.bincount(params[:, k + 5].long(), minlength=6)
+    assert counts.numel() == 6 and (counts.float() / n - 1 / 6).abs().max() < 5 * (5 / 36 / n) ** 0.5
+    for i, (lo, hi) in enumerate([(0.875, 1.125), (0.5, 1.5), (0.5, 1.5), (-0.05, 0.05)]):
+        v = params[:, k + i]
+        assert lo <= v.min() and v.max() <= hi

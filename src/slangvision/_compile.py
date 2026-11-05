@@ -19,13 +19,12 @@ from typing import TYPE_CHECKING, Any, Sequence
 
 from ._base import P, Binding, NeighbourhoodOp, Transform, _UserOp, lit
 from .transforms import (AutoAugment, CenterCrop, ColorJitter, GaussianBlur, GaussianNoise,
-                         Normalize, Pad,
-                         RandAugment,
-                         RandomAdjustSharpness, RandomAffine, RandomApply, RandomAutocontrast,
+                         Grayscale, Normalize, Pad, RandAugment, RandomAdjustSharpness,
+                         RandomAffine, RandomApply, RandomAutocontrast, RandomChannelPermutation,
                          RandomChoice, RandomCrop, RandomEqualize, RandomErasing,
-                         RandomHorizontalFlip, RandomPerspective, RandomResizedCrop,
-                         RandomRotation, RandomVerticalFlip, Resize, TimmRandAugment,
-                         TrivialAugmentWide, _Policy, _PolicyOp, _Window)
+                         RandomHorizontalFlip, RandomPerspective, RandomPhotometricDistort,
+                         RandomResizedCrop, RandomRotation, RandomVerticalFlip, Resize,
+                         TimmRandAugment, TrivialAugmentWide, _Policy, _PolicyOp, _Window)
 
 if TYPE_CHECKING:
     import torch
@@ -155,8 +154,8 @@ _BUILT_IN = (RandomResizedCrop, Resize, CenterCrop, Pad, RandomCrop, RandomHoriz
              RandomVerticalFlip, RandomRotation, RandomAffine, RandomPerspective, ColorJitter,
              GaussianBlur, RandomAdjustSharpness, RandomAutocontrast, RandomEqualize,
              RandomApply, RandomChoice, Normalize, RandomErasing, GaussianNoise, RandAugment,
-             TimmRandAugment,
-             TrivialAugmentWide, AutoAugment)
+             TimmRandAugment, TrivialAugmentWide, AutoAugment, RandomPhotometricDistort,
+             RandomChannelPermutation)
 
 
 def _expand(transforms: Sequence[Transform]) -> list[Transform]:
@@ -202,7 +201,8 @@ class Compose:
     any order; Normalize, if present, comes next, and RandomErasing last.
 
     Calling the pipeline returns a contiguous ``(B, 3, H, W)`` tensor of
-    ``dtype`` on the current CUDA stream. ``images`` is a ``(B, 3, H, W)``
+    ``dtype`` on the current CUDA stream (``(B, 1, H, W)`` after
+    ``Grayscale(num_output_channels=1)``). ``images`` is a ``(B, 3, H, W)``
     uint8 CUDA tensor, or a list of ``(3, H, W)`` uint8 CUDA tensors of any
     sizes; pass ``layout="hwc"`` for ``(H, W, 3)`` images (DALI, nvImageCodec).
     Images are read in place on the current stream: they must be written
@@ -276,6 +276,7 @@ class Compose:
                 self._erasing.append(t)     # type: ignore[arg-type]
             else:
                 raise TypeError(f"{t!r}: unknown transform kind {kind!r}")
+        self._channels = self._output_channels()
         self._resample = geometry[0] if geometry and getattr(geometry[0], "_resamples",
                                                              False) else None
         self._windows: list[_Window] = [g for g in geometry if isinstance(g, _Window)]
@@ -467,6 +468,33 @@ class Compose:
         return lines
 
     # ------------------------------------------------------------------ run
+    def _output_channels(self) -> int:
+        """1 after a top-level Grayscale(num_output_channels=1), else 3."""
+        first = next((i for i, t in enumerate(self.transforms)
+                      if isinstance(t, Grayscale) and t.num_output_channels == 1), None)
+        inner = [c for t in self.transforms for c in _walk(t._children())]
+        if any(isinstance(c, Grayscale) and c.num_output_channels == 1 for c in inner):
+            raise ValueError("Grayscale(num_output_channels=1) changes the channel count, so it "
+                             "cannot sit inside RandomApply or RandomChoice; use "
+                             "RandomGrayscale or Grayscale(num_output_channels=3)")
+        if first is None:
+            return 3
+
+        def nested(ts: Sequence[Transform]):
+            for t in ts:
+                yield t
+                yield from nested(getattr(t, "transforms", ()))
+
+        for t in nested(self.transforms[first + 1:]):
+            if isinstance(t, Grayscale):
+                raise ValueError(f"{t!r} after Grayscale(num_output_channels=1): torchvision "
+                                 "would change the channel count again")
+            fill = getattr(t, "fill", None)
+            if getattr(t, "_channels", 1) > 1 or (fill is not None and len(set(fill)) > 1):
+                raise ValueError(f"{t!r} comes after Grayscale(num_output_channels=1), whose "
+                                 "output has one channel: give it one value")
+        return 1
+
     def __call__(self, images: Any, layout: str = "chw") -> "torch.Tensor":
         return self._run(images, layout)[0]
 
@@ -500,9 +528,12 @@ class Compose:
                              "(32-bit indexing); split the batch")
         out = torch.empty(table.count, 3, OH, OW, dtype=dtype, device=dev)
         if table.count == 0:
-            return out, torch.empty(0, self._b.nparams, dtype=torch.float32, device=dev)
-        with _runtime.torch_bridge():
-            return self._launch(table, layout, OH, OW, out, params)
+            params = torch.empty(0, self._b.nparams, dtype=torch.float32, device=dev)
+        else:
+            with _runtime.torch_bridge():
+                out, params = self._launch(table, layout, OH, OW, out, params)
+        # Grayscale(num_output_channels=1): the three channels are equal
+        return (out if self._channels == 3 else out[:, :1].contiguous()), params
 
     def _launch(self, table: Any, layout: str, OH: int, OW: int, out: "torch.Tensor",
                 params: "torch.Tensor | None"):
