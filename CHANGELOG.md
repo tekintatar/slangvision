@@ -4,12 +4,14 @@
 
 ### Added
 - `slangvision.testing.compare_to_reference`: besides the largest
-  difference from torchvision, the fraction of values and the images that
-  differ by more than the output dtype's rounding, so a few step-function
-  edge cases can be told from a wrong op.
+  difference from torchvision, the fraction of values, the images and each
+  image's largest difference beyond the output dtype's rounding, with a
+  table in the guide ("Checking your pipeline") of what to expect for each
+  kind of pipeline, so step-function edge cases can be told from a wrong op.
 - Compiled kernels are cached on disk (`~/.cache/slangvision/kernels`;
-  `SLANGVISION_CACHE_DIR` moves or turns it off): a new process's first call
-  of a pipeline it compiled before takes about 1.0 s instead of 1.6 s.
+  `SLANGVISION_CACHE_DIR` moves or turns it off): a later process's first
+  call of a pipeline compiled before takes about 1.5 s instead of 2 s
+  (measured 1.0 s against 1.6 s on a warm machine).
   (SlangPy's module cache, which would save more, segfaults when one process
   loads many modules with SlangPy 0.42, so it is not used.)
 - `RandomPhotometricDistort` (torchvision's SSD colour distortion, used by its
@@ -108,6 +110,11 @@
   installs, since installing torch or torchvision restores PyTorch's.
 - The CUDA tests stop with one message when the GPU or NVRTC is not set up.
 - `main` reports version 0.2.0.dev0.
+- `import slangvision` after torchvision or DALI decoded on the GPU warns
+  that SlangPy will crash and says to import it first (Linux); before, the
+  first call segfaulted without a word.
+- A custom op whose `apply` takes the wrong number of parameters is reported
+  when the `Compose` is built; a missing reference says where it goes.
 - Faster (RTX PRO 4500, batch 256): statistics pre-passes skip images that
   do not use their op and, for antialiased bicubic or photos at least 5x the
   output area, read a stored float32 resample instead of resampling again;

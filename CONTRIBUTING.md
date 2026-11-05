@@ -15,8 +15,16 @@ explicitly when creating the environment.
 ```bash
 python3.12 -m venv .venv && . .venv/bin/activate   # or 3.10, 3.11, 3.13
 pip install -e ".[dev]"
+python -m slangvision setup   # once, on a machine with an NVIDIA GPU
 pytest                        # CUDA tests skip themselves without a GPU
 ```
+
+If `setup` says PyTorch's NVRTC is newer than your driver, pin the older one
+as it says, after `pip install -e ".[dev]"`: installing the dev extras (or
+anything else that installs torch or torchvision) puts PyTorch's back. The
+full suite takes about 5 minutes on one GPU the first time and about a
+minute once its kernels are cached (`scripts/check.sh -k <name>` runs a part
+of it).
 
 ## Checking a change
 

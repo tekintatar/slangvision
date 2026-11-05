@@ -210,6 +210,7 @@ class _UserOp(Transform):
     p = 1.0
     same_on_batch = False
     _signature = ""
+    _fixed_args = 0         # apply's parameters before the params values
 
     def __init__(self, p: float = 1.0, same_on_batch: bool = False):
         self.p = _probability(p)
@@ -220,6 +221,17 @@ class _UserOp(Transform):
         _check_params(name, self.params)
         if not isinstance(self.slang, str) or not re.search(r"\bapply\s*[<(]", self.slang):
             raise ValueError(f"{name}.slang must define `{self._signature}`")
+        # one apply(...) definition: check its parameter count now rather than
+        # at the first call's compile (a generic <...> list may come first)
+        defs = re.findall(r"\bapply\s*(?:<[^>]*>)?\s*\(([^)]*)\)\s*\{", self.slang)
+        if len(defs) == 1:
+            got = len([a for a in defs[0].split(",") if a.strip()])
+            want = self._fixed_args + len(self.params)
+            if got != want:
+                raise ValueError(
+                    f"{name}.slang: apply takes {got} parameters, but `{self._signature}` with "
+                    f"{len(self.params)} params entries needs {want}: the fixed ones, then one "
+                    "float per entry of params, in order")
 
     def _namespace(self) -> str:
         digest = hashlib.sha1(self.slang.encode()).hexdigest()[:10]
@@ -275,7 +287,11 @@ class _UserOp(Transform):
     def reference(self, img: "torch.Tensor", **params: float) -> "torch.Tensor":
         """The op in torch on one (3, H, W) float image in [0, 1]; optional,
         used only by :func:`slangvision.testing.max_reference_error`."""
-        raise NotImplementedError(f"{type(self).__name__} defines no reference")
+        if type(self).__module__.startswith("slangvision."):
+            raise NotImplementedError(f"{type(self).__name__} has no reference: built-in "
+                                      "transforms add theirs to slangvision.testing._reference")
+        raise NotImplementedError(f"{type(self).__name__} defines no reference: give it a "
+                                  "reference(self, img, ...) method (see the guide's Custom ops)")
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(p={self.p}, params={self.params})"
@@ -303,6 +319,7 @@ class ColorOp(_UserOp):
     """
 
     _signature = "float4 apply(float4 c, ...)"
+    _fixed_args = 1
 
     def _apply(self, b: Binding) -> list[str]:
         call = f"c = {self._namespace()}::apply({', '.join(['c'] + self._args(b))});"
@@ -328,6 +345,7 @@ class NeighborhoodOp(_UserOp):
     _kind = "neighbourhood"
     border = "reflect"
     _signature = "float4 apply<I : IImage>(I img, int x, int y, ...)"
+    _fixed_args = 3
 
     def _validate(self) -> None:
         super()._validate()

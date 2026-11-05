@@ -62,7 +62,7 @@ installed the same test also compares the Python and compiled bridges'
 output; without it (the 2026-11-04 run below) both calls use the Python
 bridge.
 `tests/test_api.py` checks pipeline-structure rules, argument
-validation, custom-op declarations and that a Compose is fixed when built,
+validation, custom-op declarations (including `apply`'s parameter count), porting hints and that a Compose is fixed when built,
 without a GPU or torch. `tests/test_parameters.py` (CPU torch and
 torchvision, run in CI) compares parsed arguments with independent sources,
 since the references reuse them: ColorJitter, RandomPhotometricDistort and

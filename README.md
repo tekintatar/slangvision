@@ -106,9 +106,9 @@ x = train(images)   # (64, 3, 224, 224) float16, on the current CUDA stream
   any sizes.
 - Output: `Compose(..., dtype=torch.float16)` by default; `torch.bfloat16`
   and `torch.float32` too.
-- The first call compiles the pipeline (about 1.6 s); later calls reuse the
-  kernels, and compiled kernels are cached on disk, so a new process gets
-  going in about 1 s.
+- The first call compiles the pipeline (about 2 s); later calls reuse the
+  kernels, and compiled kernels are cached on disk, so the first call in a
+  later process takes about 1.5 s.
 
 ## Transforms
 

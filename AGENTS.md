@@ -74,8 +74,12 @@ notes (interpreter paths, GPU hosts, identities) in your own untracked
 - Kernels run on PyTorch's current CUDA stream through
   `spy.create_torch_device`. Not inside CUDA graph capture (SlangPy queries
   the stream while capturing).
-- With DALI, `slangpy` must be imported before DALI builds a pipeline, or
-  SlangPy segfaults creating its CUDA device (DALI 2.4, SlangPy 0.42).
+- `slangpy` must be imported before DALI builds a pipeline or torchvision
+  decodes on the GPU, or SlangPy segfaults creating its CUDA device (DALI
+  2.4, torchvision 0.28-0.29, SlangPy 0.42-0.43). `_preflight.py` warns
+  about that order (it looks for libnvcuvid, which a GPU decode loads;
+  importing torchvision alone does not); a warning because other video
+  libraries load it too.
 - SlangPy devices are thread-affine: pipelines run from one thread.
 - bfloat16: Slang compiles `BFloat16`, but SlangPy's torch bridge rejects
   torch.bfloat16 tensors (no bfloat16 in its ScalarType/DataType tables, 0.42

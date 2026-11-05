@@ -46,6 +46,7 @@ class ReferenceDiff(NamedTuple):
     fraction: float         #: share of compared values off by more than ``tol``
     images: list[int]       #: indices of the images with any value off by more than ``tol``
     tol: float              #: the threshold used
+    image_max: list[float]  #: each image's largest difference (NaN if none comparable)
 
 _MODES: dict[str, Any] = {}     # filled with torchvision's InterpolationMode on first use
 
@@ -67,7 +68,8 @@ def compare_to_reference(pipeline: Compose, images: Any, layout: str = "chw",
     fraction of values off by more than ``tol`` and which images they are in.
     ``tol`` defaults to what the output dtype's rounding allows (1e-4 for
     float32, 4e-3 for float16, 1.6e-2 for bfloat16). Noise pixels are skipped
-    as in :func:`max_reference_error`."""
+    as in :func:`max_reference_error`. The guide's "Checking your pipeline"
+    table says what to expect for each kind of pipeline."""
     out, params = pipeline._run(images, layout)
     ref = _replay(pipeline, images, params, layout)
     if out.shape != ref.shape:
@@ -76,11 +78,12 @@ def compare_to_reference(pipeline: Compose, images: Any, layout: str = "chw",
     tol = _TOLERANCE[pipeline._dtype] if tol is None else float(tol)
     keep = ~ref.isnan()         # random noise (GaussianNoise, RandomErasing) is not replayed
     if not keep.any():
-        return ReferenceDiff(float("nan"), float("nan"), [], tol)
+        return ReferenceDiff(float("nan"), float("nan"), [], tol, [float("nan")] * len(out))
     diff = (out.float() - ref).abs().nan_to_num(0.0)
     off = (diff > tol) & keep
+    per_image = [float(d[k].max()) if k.any() else float("nan") for d, k in zip(diff, keep)]
     return ReferenceDiff(float(diff[keep].max()), float(off.sum() / keep.sum()),
-                         off.flatten(1).any(1).nonzero().flatten().tolist(), tol)
+                         off.flatten(1).any(1).nonzero().flatten().tolist(), tol, per_image)
 
 
 def _replay(pipeline: Compose, images: Any, params: "torch.Tensor",

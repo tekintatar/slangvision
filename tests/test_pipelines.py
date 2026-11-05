@@ -1423,6 +1423,7 @@ def test_compare_to_reference_counts_values_and_images(images):
     torch.manual_seed(0)
     good = compare_to_reference(pipe, images)
     assert good.fraction == 0.0 and good.images == [] and good.max < good.tol == 1e-4
+    assert len(good.image_max) == len(images) and max(good.image_max) == good.max
 
     class Wrong(A.ColorOp):        # gamma, but its reference says identity
         params = {"g": A.Uniform(0.5, 2.0)}

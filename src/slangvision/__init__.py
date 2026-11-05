@@ -21,9 +21,11 @@ See docs/GUIDE.md.
 
 __version__ = "0.2.0.dev0"
 
-# Load SlangPy (and, through it, torch) at import: if DALI loads its native
-# libraries before SlangPy, SlangPy crashes creating its CUDA device, so
-# importing slangvision first must be enough.
+# Before SlangPy loads: a GPU decoder that already ran would make SlangPy
+# segfault creating its CUDA device, so stop with a clear message instead.
+from . import _preflight  # noqa: F401
+# Load SlangPy (and, through it, torch) at import, so that importing
+# slangvision before DALI or torchvision's GPU decoder runs is enough.
 from . import _runtime  # noqa: F401
 from ._base import Choice, ColorOp, NeighborhoodOp, NeighbourhoodOp, Uniform
 from ._compile import Compose

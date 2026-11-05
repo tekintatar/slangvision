@@ -359,3 +359,28 @@ def test_porting_hints():
         A.Nope                                             # noqa: B018
     with pytest.raises(TypeError, match="random.choice"):
         A.RandomChoice([A.CutMix(num_classes=3), A.MixUp(num_classes=3)])
+
+
+def test_custom_op_parameter_count_is_checked_when_built():
+    class TooFew(A.ColorOp):
+        params = {"a": A.Uniform(0.0, 1.0)}
+        slang = "float4 apply(float4 c) { return c; }"
+
+    class Box(A.NeighborhoodOp):
+        params = {"r": A.Choice([1, 2])}
+        slang = "float4 apply<I : IImage>(I img, int x, int y) { return img.load(x, y); }"
+
+    with pytest.raises(ValueError, match="apply takes 1 parameters.*needs 2"):
+        A.Compose([TooFew()])
+    with pytest.raises(ValueError, match="apply takes 3 parameters.*needs 4"):
+        A.Compose([A.RandomCrop(8), Box()])
+
+
+def test_missing_references_say_where_they_go():
+    class Mine(A.ColorOp):
+        slang = "float4 apply(float4 c) { return c; }"
+
+    with pytest.raises(NotImplementedError, match="give it a reference"):
+        Mine().reference(None)
+    with pytest.raises(NotImplementedError, match="slangvision.testing._reference"):
+        A.RandomInvert().reference(None)

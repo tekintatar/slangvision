@@ -61,11 +61,11 @@ compiled torch bridge (`slangpy-torch`) is optional: without it, slangvision
 uses SlangPy's pure-Python torch bridge for its own calls, which adds under
 0.1 ms per batch.
 
-The first call of a pipeline compiles it (about 1.6 s, including setting up
-the GPU device once per process); later calls reuse the compiled kernels.
-The CUDA code NVRTC makes is also cached on disk, in
+The first call of a pipeline compiles it (about 2 s in a fresh environment,
+including setting up the GPU device once per process); later calls reuse the
+compiled kernels. The CUDA code NVRTC makes is also cached on disk, in
 `~/.cache/slangvision/kernels` (or `$XDG_CACHE_HOME/slangvision/kernels`), so
-a new process with the same pipeline gets going in about 1 s. `SLANGVISION_CACHE_DIR` moves the cache
+the first call in a later process with the same pipeline takes about 1.5 s. `SLANGVISION_CACHE_DIR` moves the cache
 (empty turns it off); deleting the folder is always safe.
 
 `setup` adds one link, `libnvrtc.so`, to SlangPy's package folder, because
@@ -349,7 +349,7 @@ them).
 Decoding usually limits training throughput, so pick a fast decoder:
 
 ```py
-# torchvision (0.28) GPU decode, CHW. Wait for the previous training step
+# torchvision (0.28, 0.29) GPU decode, CHW. Wait for the previous training step
 # first: torchvision's decoder can otherwise overwrite its memory (see below).
 from torchvision.io import ImageReadMode, decode_jpeg
 torch.cuda.current_stream().synchronize()
@@ -379,10 +379,11 @@ while training:
 ```
 
 **Import `slangvision` before DALI builds a pipeline or torchvision decodes
-on the GPU.** If either loads its native GPU libraries before SlangPy is
-imported, SlangPy crashes with a segmentation fault while creating its CUDA
-device (seen with DALI 2.4, torchvision 0.28 and SlangPy 0.42/0.43); in the
-other order they work in one process.
+on the GPU.** If a GPU decoder runs before SlangPy is loaded, SlangPy
+crashes with a segmentation fault while creating its CUDA device (seen with
+DALI 2.4, torchvision 0.28-0.29 and SlangPy 0.42/0.43); in the other order
+they work in one process. On Linux, `import slangvision` after a GPU decode
+prints a `RuntimeWarning` that says so before the crash.
 
 **torchvision's GPU decoder needs a sync while a training step is still
 running** (torchvision 0.28). `decode_jpeg(..., device="cuda")` allocates its
@@ -407,12 +408,21 @@ processes separately, which made training slower than augmenting on the CPU
 benchmark).
 
 ```py
+class Decoded(torch.utils.data.Dataset):     # the workers only decode
+    def __init__(self, files, labels):
+        self.files, self.labels = files, labels
+    def __len__(self):
+        return len(self.files)
+    def __getitem__(self, i):                # uint8 (3, H, W), any size
+        img = torchvision.io.decode_image(self.files[i], mode=torchvision.io.ImageReadMode.RGB)
+        return img, self.labels[i]
+
 def collate(batch):                  # runs in the workers
     images, labels = zip(*batch)     # decoded uint8 (3, H, W) tensors
     return (torch.cat([im.reshape(-1) for im in images]),
             torch.tensor([tuple(im.shape) for im in images]), torch.tensor(labels))
 
-loader = torch.utils.data.DataLoader(decoded_dataset, batch_size=256, num_workers=16,
+loader = torch.utils.data.DataLoader(Decoded(files, labels), batch_size=256, num_workers=16,
                                      pin_memory=True, collate_fn=collate)
 for flat, shapes, labels in loader:
     parts = flat.cuda(non_blocking=True).split(shapes.prod(1).tolist())
@@ -580,15 +590,29 @@ class RandomBrightnessContrast(A.ColorOp):
 | `TrivialAugmentWide` translate | torch builds the magnitude table in float32 with a vectorized CPU kernel; on some CPUs (seen on an Arm Mac and an AMD EPYC) bin 15 of 31 comes out 15.999999, so torchvision shifts those images 15 pixels and SlangVision 16 (its table is computed the plain way): every image that draws translate at that bin differs as a whole, a few percent of a batch |
 | `TimmRandAugment` | against timm on uint8 Pillow images, one op on images that are not resampled: invert, posterize, solarize, solarize-add and equalize match exactly; warps, brightness, contrast and autocontrast are 0 to 1 uint8 step above Pillow's (Pillow truncates); colour and sharpness up to half a step times |1 - factor| further (Pillow also rounds the luma and smoothed images: -0.45 to +1.45 steps at magnitudes up to 10). In a recipe after a crop (timm sees the crop rounded to uint8): mean difference under 0.6 steps, under 2 in 1,000 values more than 3 steps away (values near a posterize, solarize or equalize level edge), float32 and float16 output alike |
 | warps with `interpolation="nearest"` | about 1 pixel in 100,000 (1 in 20,000 for `RandomPerspective`) takes the neighbouring source pixel: torchvision computes the sampling positions in float32 with a different rounding, so a position within about 1e-5 pixels of a pixel boundary can go either way. Positions exactly on a half pixel, which round magnitudes can produce on whole rows (RandAugment's ShearX and ShearY at magnitude 20 shift every fifth row or column by a whole number plus a half: those pixels are the only ones that differ), round half to even here and either way in torchvision. Bilinear warps match like the other ops |
-| float16 output after a warp or blur | the image between passes is float16 too, so colour ops after it can scale that rounding (up to about 8e-3 at normalized values with `ColorJitter(0.4, 0.4, 0.4, 0.1)` after a warp) |
+| float16 output after a warp or blur | the image between passes is float16 too, so colour ops after it can scale that rounding (up to about 8e-3 at normalized values with `ColorJitter(0.4, 0.4, 0.4, 0.1)` after a warp), and step ops after it can cross an edge: solarize flips a value that crosses its threshold, posterize moves it a level |
 
 torchvision's uint8 path rounds after every op; this matches its float path.
 
-To check your own pipeline, `slangvision.testing.compare_to_reference(pipe,
-images)` replays each image's random values through torchvision and returns
-the largest difference, the fraction of values off by more than the output
-dtype's rounding, and which images they are in: a handful of values at a step
-edge, or whole images from the case above, look different from a wrong op.
+### Checking your pipeline
+
+`slangvision.testing.compare_to_reference(pipe, images)` replays each
+image's random values through torchvision and returns `max` (the largest
+difference), `fraction` (the share of values off by more than the output
+dtype's rounding, `tol`), `images` (the images with such values) and
+`image_max` (each image's largest difference). What to expect, in normalized
+units:
+
+| your pipeline | float32 output | float16 output |
+|---|---|---|
+| crops, resizes, flips, colour jitter, grayscale, blur, bilinear warps, noise, erasing | `fraction` 0, `max` about 1e-5 | `fraction` 0 or a few values just over `tol` after a warp or blur (up to about 8e-3) |
+| step ops (posterize, solarize, equalize) or nearest warps, alone or in a policy, after a crop | under 3 in 1,000 values, each at a level edge or a rounding tie; scattered over many images | more: equalize a level away for about 2% of values after a float16 pass; a value that crosses solarize's threshold flips (a difference up to about 4), posterize's moves a level; `fraction` under a few in 1,000 |
+| `TrivialAugmentWide` or `RandAugment` on a CPU where torch's magnitude table has 15.999999 (Arm Macs, AMD EPYC) | whole images shifted one pixel: those images are almost entirely off, a few percent of a batch | the same |
+
+A result inside these is SlangVision matching torchvision as far as float
+arithmetic allows. Outside them (a pipeline without step ops or policies
+with `fraction` above 0 in float32, or many images almost entirely off),
+something differs: look at the worst images (`image_max`) and report it.
 
 ## Performance
 
