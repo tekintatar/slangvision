@@ -109,10 +109,12 @@ float round_even(float x)
     return r;
 }
 
-// torch's grid_sample at (u, v) with zero padding, then torchvision's fill:
-// a mask channel of ones is sampled alongside, and the result is
-// (img - fill) * mask + fill for bilinear, fill where mask < 0.5 for nearest.
-float4 warp_sample<I : IImage>(I img, float u, float v, int nearest, float4 fill)
+// torch's grid_sample at (u, v) with zero padding. With `masked` (a fill
+// given), torchvision's fill: a mask channel of ones is sampled alongside, and
+// the result is (img - fill) * mask + fill for bilinear, fill where mask < 0.5
+// for nearest. Without it (fill=None, the policies' default) the zero padding
+// stays: pass fill = 0.
+float4 warp_sample<I : IImage>(I img, float u, float v, int nearest, float4 fill, int masked)
 {
     int w = img.width();
     int h = img.height();
@@ -140,5 +142,18 @@ float4 warp_sample<I : IImage>(I img, float u, float v, int nearest, float4 fill
     if (inx1 && iny0) { float t = ax * (1.0 - ay); acc += t * img.load(x0 + 1, y0); mask += t; }
     if (inx0 && iny1) { float t = (1.0 - ax) * ay; acc += t * img.load(x0, y0 + 1); mask += t; }
     if (inx1 && iny1) { float t = ax * ay; acc += t * img.load(x0 + 1, y0 + 1); mask += t; }
-    return (acc - fill) * mask + fill;
+    return masked != 0 ? (acc - fill) * mask + fill : acc;
+}
+
+// torch.linspace(start, end, steps)[i] in float32 (start and end already
+// float32), computed in double with a float rounding after each step. torch's
+// vectorized CPU kernel can differ in the last bit, by CPU.
+double lin_f32(double start, double end, int steps, int i)
+{
+    if (steps == 1)
+        return start;
+    double step = double(float(double(float(end - start)) / double(steps - 1)));
+    if (i < steps / 2)
+        return double(float(start + double(float(step * double(i)))));
+    return double(float(end - double(float(step * double(steps - i - 1)))));
 }

@@ -79,6 +79,7 @@ the GPU device once per process); later calls reuse the compiled kernels.
 | `RandomPosterize(bits, p=0.5)` | torchvision's float behaviour: `floor(value * 2**bits) / 2**bits` (its uint8 path keeps the top bits instead: white at 4 bits is 0.9375 here, 240/255 there) |
 | `RandomAdjustSharpness(sharpness_factor, p=0.5)` | decided per image; reads neighbouring pixels, so it starts a pass like a blur |
 | `RandomAutocontrast(p=0.5)` | decided per image; each image's per-channel min and max come from a pre-pass |
+| `RandAugment(num_ops=2, magnitude=9, num_magnitude_bins=31, interpolation="nearest", fill=None)` | ops, and the signs of their magnitudes, drawn per image; comes after the resize and crops; colour ops follow torchvision's float behaviour (see below) |
 | `RandomEqualize(p=0.5)` | decided per image; as in torchvision for float images, the image is quantized to 256 levels and equalized with PIL's scheme, from per-image histograms built by a pre-pass; values outside [0, 1] (bicubic overshoot) are clamped first, where torchvision's cast is undefined |
 | `Normalize(mean, std)` | comes after everything except `RandomErasing` |
 | `RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0)` | box drawn per image; comes last (after `Normalize`); `value="random"` fills per-pixel N(0, 1) noise from SlangVision's own generator |
@@ -89,6 +90,17 @@ torchvision's filters: with `antialias=True` (the default) PyTorch's
 antialias kernels, cubic with a = -0.5 like PIL, and without it classic
 bicubic with a = -0.75. Bicubic float output can overshoot [0, 1], as
 torchvision's does; it costs about twice as much as bilinear.
+
+`RandAugment` is torchvision's: for each image, `num_ops` times, one of 14
+ops (identity, shear x/y, translate x/y, rotate, brightness, colour,
+contrast, sharpness, posterize, solarize, autocontrast, equalize), each at
+torchvision's magnitude for `magnitude` and a random sign where it has one.
+Each op runs as its own pass, so `RandAugment()` adds two passes. Its
+magnitudes are torchvision's float32 tables; torch computes those with a
+vectorized CPU kernel whose last bit varies between CPUs, and SlangVision
+computes them the plain way. DeiT-style recipes use timm's RandAugment
+(`rand-m9-mstd0.5-inc1`), which differs (magnitude noise, PIL ops,
+different op set) and is not here yet.
 
 The warps (`RandomRotation`, `RandomAffine`, `RandomPerspective`) sample
 the image as it is at their point of the pipeline with `"nearest"` or
@@ -345,7 +357,8 @@ imports this module. `pipe.source` shows the generated Slang.
 | bfloat16 output | torchvision's value rounded to bfloat16 (8 significant bits), as `.to(torch.bfloat16)` rounds it; at most one bfloat16 step away (about 0.016 at normalized values near 2.6) where the two land on either side of a rounding edge, which pipelines with a blur do more often |
 | threshold ops (`RandomSolarize`) | a value landing exactly on the threshold may be inverted on one side and not the other; all other values match |
 | `RandomPosterize`, `RandomEqualize` | step functions: a resampled value within float rounding of a level edge can land on the other side. In one pass, about 1 value in 100,000 (posterize, by one level) and 1 in 30,000 to 1 in 3,000 depending on the ops before it (equalize, by up to 2/255: one moved pixel can shift the lookup table). After a blur, warp or sharpness with float16 output, the float16 image between passes moves more values across edges: about 1 in 1,000 for posterize and 1 in 100 for equalize (by up to 3/255). On images that are not resampled they match exactly |
-| warps with `interpolation="nearest"` | about 1 pixel in 100,000 (1 in 20,000 for `RandomPerspective`) takes the neighbouring source pixel: torchvision computes the sampling positions in float32 with a different rounding, so a position within about 1e-5 pixels of a pixel boundary can go either way. Bilinear warps match like the other ops |
+| `RandAugment` | float32 output: as its ops (above and below); in a recipe after a crop, under 3 in 1,000 values differ (step ops at level edges, nearest warps at rounding ties). float16 output: the float16 image between its passes makes equalize land a level (1/255) away from torchvision's float32 result for about 2% of values; `dtype=torch.float32` keeps float32 between passes (2.84 to 3.63 ms per batch of 256 in the RandAugment recipe, measured with an ad-hoc script) |
+| warps with `interpolation="nearest"` | about 1 pixel in 100,000 (1 in 20,000 for `RandomPerspective`) takes the neighbouring source pixel: torchvision computes the sampling positions in float32 with a different rounding, so a position within about 1e-5 pixels of a pixel boundary can go either way. Positions exactly on a half pixel, which round magnitudes can produce on whole rows (RandAugment's ShearX and ShearY at magnitude 20 shift every fifth row or column by a whole number plus a half: those pixels are the only ones that differ), round half to even here and either way in torchvision. Bilinear warps match like the other ops |
 | float16 output after a warp or blur | the image between passes is float16 too, so colour ops after it can scale that rounding (up to about 8e-3 at normalized values with `ColorJitter(0.4, 0.4, 0.4, 0.1)` after a warp) |
 
 torchvision's uint8 path rounds after every op; this matches its float path.
@@ -362,6 +375,12 @@ has the reference runs and raw data). How to read them:
   is blurred); its per-image loop is the like-for-like comparison. Kornia
   draws per image in one batched call; its RandomResizedCrop does not
   antialias.
+- `RandAugment()` after a crop and flip: 2.88 ms per batch of 256 on an RTX
+  PRO 4500, against 111 ms for torchvision per image (on the uint8 crop, as
+  its reference recipe runs it) and 6.3 ms for torchvision batched with one
+  setting for all 256 (the `randaug` recipe in the benchmark script). Each
+  op adds a pass and, for the images that choose them, contrast, autocontrast
+  and equalize pre-passes.
 - Ops that need a per-image statistic pay for a pre-pass over the images
   they apply to. Added to the ImageNet recipe (RTX PRO 4500, batch 256,
   1.69 ms in that run; an ad-hoc script, not in the repository), at `p=0.5`: `RandomAutocontrast` +0.55 ms, `RandomEqualize`
@@ -436,6 +455,6 @@ Training from scratch on its 6,667 trainval images (100 classes), batch
   at 224x224); split larger batches.
 - Run pipelines from one thread: the GPU device is created by, and tied to,
   the thread that runs the first pipeline (SlangPy devices are thread-affine).
-- Not yet: the RandAugment, TrivialAugment and AutoAugment policies
-  (their ops are here), masks and boxes. Warps cannot come before a resize or crop, and `RandomRotation`
+- Not yet: timm's RandAugment, TrivialAugmentWide and AutoAugment (their
+  ops are here), masks and boxes. Warps cannot come before a resize or crop, and `RandomRotation`
   has no `expand=True`.

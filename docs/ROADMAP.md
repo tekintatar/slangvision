@@ -12,11 +12,12 @@
   RandomErasing, MixUp/CutMix, RandomRotation/RandomAffine/RandomPerspective
   (a warp pass), RandomInvert/RandomPosterize/RandomAdjustSharpness/
   RandomAutocontrast/RandomEqualize (torchvision's float behaviour; per-image
-  statistics from pre-passes). Next: the policies below.
-- **Phase 2 — policies**: timm's RandAugment (the variant most recipes
-  use), TrivialAugmentWide, torchvision's RandAugment and AutoAugment, as a
-  per-image choice among the ops above (geometric ones through the warp
-  pass). Float behaviour, decided 2026-11-05: torchvision's uint8 path cannot
+  statistics from pre-passes), torchvision's RandAugment. Next: the other
+  policies below.
+- **Phase 2 — policies**: torchvision's RandAugment ✅ (2026-11-05), then
+  timm's RandAugment (the variant most recipes use), TrivialAugmentWide and
+  AutoAugment, as per-image choices among the same ops (geometric ones
+  through the warp pass). Float behaviour, decided 2026-11-05: torchvision's uint8 path cannot
   be matched exactly anyway (its uint8 resize differs); most ops differ by
   at most 1/255, posterize by its rounding scheme, and equalize can move a
   value by a level where the two quantize an input differently. timm's SolarizeAdd comes with

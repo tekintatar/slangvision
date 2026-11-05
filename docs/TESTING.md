@@ -35,6 +35,7 @@ output and 4e-3 for float16 output, in normalized units.
 | RandomAdjustSharpness | reference: factors 0 and 2.5 exact on unresampled images; bicubic overshoot clamped at the border; after a crop and ColorJitter, inside RandomApply, inside RandomChoice after a blur |
 | RandomAutocontrast | reference: exact on unresampled images, flat/two-valued/ramp images; after ColorJitter (the min/max read after a contrast change), in RandomChoice after a blur; `p=0` leaves images untouched |
 | RandomEqualize | reference: exact on unresampled images and on flat (PIL's step 0), two-valued, dominant-value and ramp images; after a crop, ColorJitter and a blur, inside RandomChoice (only some images choose it), off quantization edges (under 2e-3 of values; measured about 3e-4 of pixels) |
+| RandAugment | reference (torchvision's own op functions and magnitude tables, fed the drawn op and sign): one op on 120 unresampled images, every op drawn: exact with bilinear warps (magnitude 9, and 30 with RGB fill); nearest (magnitude 9, 0 with 5 bins) within 1e-3 of values, at magnitude 20 with fill 0.5 within 5e-3 (its shear puts whole rows on half pixels, exact ties); equalize and autocontrast after it; two and three ops in a recipe between flips (under 3e-3 of values, edge cases of step ops and nearest ties); float16 output (under 5% of values, 90% within float16 rounding); op frequencies uniform and signs even per image; `same_on_batch` shares the ops |
 | ColorOp, NeighbourhoodOp | reference: user-defined gamma and box blur (reflect, clamp), helper-name isolation, compile-error message |
 
 Also on CUDA: batch tensor, CHW list, HWC list and a non-contiguous HWC view
@@ -125,3 +126,8 @@ validation of newer code.
   ImageNet recipe measured with an ad-hoc script (median of 30 synced calls,
   batch 256 of 512x384 photo-like images). Review fixes (sharpness clamps
   its border; float16 step-op rates measured after a blur): 239 passed.
+- 2026-11-05, RandAugment, same host and stack (box scripts' `CUDA_PATH`):
+  256 passed; with the review's added tests 260 passed (the nearest
+  mismatches at magnitude 20 checked to be ShearX rows and ShearY columns
+  on exact half pixels only). Benchmark: `randaug` recipe, raw data in
+  `benchmarks/results/rtx_pro_4500_randaug_2026-11-05.json`.

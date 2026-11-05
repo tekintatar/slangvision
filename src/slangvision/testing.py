@@ -111,6 +111,25 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
             if t.ranges[op]:
                 img = fns[op](img, row[k + op])
         return img
+    if isinstance(t, T.RandAugment):
+        from torchvision.transforms import v2
+
+        ra = v2.RandAugment(t.num_ops, t.magnitude, t.num_magnitude_bins,
+                            interpolation=_MODES[t.interpolation],
+                            fill=None if t.fill is None else list(t.fill))
+        h, w = img.shape[-2:]
+        names = list(ra._AUGMENTATION_SPACE)
+        for step in t._children():
+            k = b.k(step)
+            name = names[int(row[k])]
+            magnitudes_fn, signed = ra._AUGMENTATION_SPACE[name]
+            magnitudes = magnitudes_fn(ra.num_magnitude_bins, h, w)
+            magnitude = 0.0 if magnitudes is None else float(magnitudes[ra.magnitude])
+            if signed and row[k + 1] < 0:
+                magnitude = -magnitude
+            img = ra._apply_image_or_video_transform(  # type: ignore[assignment]
+                img, name, magnitude, interpolation=ra.interpolation, fill=ra._fill)
+        return img
     if isinstance(t, (T.RandomAutocontrast, T.RandomEqualize, T.RandomAdjustSharpness)):
         if row[b.k(t)] <= 0.5:
             return img

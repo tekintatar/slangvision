@@ -16,6 +16,9 @@
 #             + RandomSolarize(0.5, 0.2) + Normalize
 #   rotate    imagenet with RandomRotation(15) (nearest, as torchvision's
 #             default) after the flip
+#   randaug   RandomResizedCrop(224) + flip + RandAugment(2, 9) + Normalize
+#             (torchvision runs RandAugment on the uint8 crop, as its
+#             reference recipe does)
 # Input: a batch of photo-like 512x384 uint8 images already on the GPU, or
 # with --images DIR the first --batch JPEGs under DIR decoded on the GPU as a
 # list of their own sizes (then torchvision runs per image only: different
@@ -46,6 +49,10 @@
 # per-image loop within 8%, its batched SimCLR GPU time varied more):
 #
 #   rotate     1.84 (1.62)   23.5 (23.2)         275 (43.2)              -
+#
+# randaug, added 2026-11-05 (rtx_pro_4500_randaug_2026-11-05.json):
+#
+#   randaug    2.88 (2.58)   6.32 (6.48)         111 (15.2)              -
 #
 # Honest read:
 # - torchvision's batch mode draws ONE random setting for the whole batch, so
@@ -100,6 +107,9 @@ def ours(interp: str = "bilinear") -> dict:
         "rotate": A.Compose([A.RandomResizedCrop(224, interpolation=interp),
                              A.RandomHorizontalFlip(), A.RandomRotation(15),
                              A.ColorJitter(0.4, 0.4, 0.4, 0.1), A.Normalize(MEAN, STD)]),
+        "randaug": A.Compose([A.RandomResizedCrop(224, interpolation=interp),
+                              A.RandomHorizontalFlip(), A.RandAugment(),
+                              A.Normalize(MEAN, STD)]),
     }
 
 
@@ -120,6 +130,7 @@ def torchvision_recipes(interp: str = "bilinear") -> dict:
                                      v2.RandomSolarize(128, p=0.2)] + tail),
         "rotate": v2.Compose(crop + [v2.RandomRotation(15), v2.ColorJitter(0.4, 0.4, 0.4, 0.1)]
                              + tail),
+        "randaug": v2.Compose(crop + [v2.RandAugment()] + tail),
     }
 
 

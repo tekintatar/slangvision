@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import numbers
+import struct
 from typing import Any, Sequence
 
 from ._base import ST, Binding, ColorOp, P, Transform, Uniform, _probability, lit, stop
@@ -364,6 +365,19 @@ def _pair(value: Any, name: str) -> tuple[float, float] | None:
     return a, b
 
 
+def _warp_lines(k: int, interpolation: str, fill: tuple[float, float, float] | None) -> list[str]:
+    """Sample the previous pass through the coefficients in slots k .. k + 7;
+    fill None keeps torch's zero padding (no fill blend)."""
+    f0, f1, f2 = (lit(v) for v in (fill or (0.0, 0.0, 0.0)))
+    return ["MidImage img = { src, b, OW, OH, 1 };",
+            "float fx = float(x); float fy = float(y);",
+            f"float den = {P(k + 6)} * fx + {P(k + 7)} * fy + 1.0;",
+            f"float u = ({P(k)} * fx + {P(k + 1)} * fy + {P(k + 2)}) / den;",
+            f"float v = ({P(k + 3)} * fx + {P(k + 4)} * fy + {P(k + 5)}) / den;",
+            f"return warp_sample(img, u, v, {int(interpolation == 'nearest')}, "
+            f"float4({f0}, {f1}, {f2}, 0.0), {int(fill is not None)});"]
+
+
 class _Warp(Transform):
     _kind = "warp"
     p = 1.0
@@ -400,17 +414,8 @@ class _Warp(Transform):
     def _input(self, b: Binding) -> list[str]:
         """Body of the warp pass's input function (src, p, b, x, y, OW, OH in scope)."""
         k = b.k(self)
-        f0, f1, f2 = (lit(v) for v in self.fill)
-        lines = ["MidImage img = { src, b, OW, OH, 1 };"]
-        if self.p < 1.0:
-            lines.append(f"if (!({P(k)} > 0.5)) return load_mid(src, x, y, b);")
-        return lines + [
-            "float fx = float(x); float fy = float(y);",
-            f"float den = {P(k + 7)} * fx + {P(k + 8)} * fy + 1.0;",
-            f"float u = ({P(k + 1)} * fx + {P(k + 2)} * fy + {P(k + 3)}) / den;",
-            f"float v = ({P(k + 4)} * fx + {P(k + 5)} * fy + {P(k + 6)}) / den;",
-            f"return warp_sample(img, u, v, {int(self.interpolation == 'nearest')}, "
-            f"float4({f0}, {f1}, {f2}, 0.0));"]
+        gate = [f"if (!({P(k)} > 0.5)) return load_mid(src, x, y, b);"] if self.p < 1.0 else []
+        return gate + _warp_lines(k + 1, self.interpolation, self.fill)
 
 
 class RandomRotation(_Warp):
@@ -608,12 +613,7 @@ class RandomSolarize(ColorOp):
     """torchvision RandomSolarize. ``threshold`` is on the 0-1 scale (the
     pipeline works on floats): use 0.5, not 128."""
 
-    slang = """
-    float4 apply(float4 c, float t)
-    {
-        return float4(c.x >= t ? 1.0 - c.x : c.x, c.y >= t ? 1.0 - c.y : c.y,
-                      c.z >= t ? 1.0 - c.z : c.z, 0.0);
-    }"""
+    slang = "float4 apply(float4 c, float t) { return solarize(c, t); }"
 
     def __init__(self, threshold: float, p: float = 0.5, same_on_batch: bool = False):
         super().__init__(p, same_on_batch)
@@ -626,7 +626,7 @@ class RandomSolarize(ColorOp):
 class RandomInvert(ColorOp):
     """torchvision RandomInvert: 1 - value."""
 
-    slang = "float4 apply(float4 c) { return float4(1.0 - c.x, 1.0 - c.y, 1.0 - c.z, 0.0); }"
+    slang = "float4 apply(float4 c) { return invert(c); }"
 
     def __init__(self, p: float = 0.5, same_on_batch: bool = False):
         super().__init__(p, same_on_batch)
@@ -638,14 +638,7 @@ class RandomPosterize(ColorOp):
     ``bits`` bits instead, which gives slightly different values, e.g. 240/255
     rather than 15/16 for white at 4 bits.)"""
 
-    slang = """
-    float4 apply(float4 c, float n)
-    {
-        float top = n - 1.0;
-        float k = 1.0 / n;
-        return float4(clamp(floor(c.x * n), 0.0, top) * k, clamp(floor(c.y * n), 0.0, top) * k,
-                      clamp(floor(c.z * n), 0.0, top) * k, 0.0);
-    }"""
+    slang = "float4 apply(float4 c, float n) { return posterize(c, n); }"
 
     bits: int
 
@@ -776,20 +769,168 @@ class RandomAdjustSharpness(_Gated):
         return None
 
     def _input(self, b: Binding) -> list[str]:
-        return [
-            "float4 c = load_mid(src, x, y, b);",
-            f"if (!({P(b.k(self))} > 0.5)) return c;",
-            # torchvision clamps the whole output, the unblended border included
-            "if (x == 0 || y == 0 || x == OW - 1 || y == OH - 1) return clamp01(c);",
-            "float4 ring = float4(0.0);",
-            "for (int dy = -1; dy <= 1; ++dy)",
-            "    for (int dx = -1; dx <= 1; ++dx)",
-            "        if (dx != 0 || dy != 0) ring += load_mid(src, x + dx, y + dy, b);",
-            "float4 blur = ring * (1.0 / 13.0) + c * (5.0 / 13.0);",
-            f"return clamp01(c + {lit(1.0 - self.sharpness_factor)} * (blur - c));"]
+        return [f"if (!({P(b.k(self))} > 0.5)) return load_mid(src, x, y, b);",
+                "MidImage img = { src, b, OW, OH, 1 };",
+                f"return sharpen(img, x, y, {lit(1.0 - self.sharpness_factor)});"]
 
     def __repr__(self) -> str:
         return f"RandomAdjustSharpness(sharpness_factor={self.sharpness_factor}, p={self.p})"
+
+
+# ---------------------------------------------------------------- policies
+def _f32(x: float) -> float:
+    return struct.unpack("f", struct.pack("f", x))[0]
+
+
+def _lin_f32(start: float, end: float, steps: int, i: int) -> float:
+    """torch.linspace(start, end, steps)[i] in float32, as lin_f32 in
+    shaders/warp.slang (torch's vectorized CPU kernel can differ in the last bit)."""
+    s, e = _f32(start), _f32(end)
+    if steps == 1:
+        return s
+    step = _f32(_f32(e - s) / (steps - 1))
+    if i < steps // 2:
+        return _f32(s + _f32(step * i))
+    return _f32(e - _f32(step * (steps - i - 1)))
+
+
+# torchvision's RandAugment ops, in its order (index = the op's code below)
+_RA_OPS = ("Identity", "ShearX", "ShearY", "TranslateX", "TranslateY", "Rotate", "Brightness",
+           "Color", "Contrast", "Sharpness", "Posterize", "Solarize", "AutoContrast", "Equalize")
+
+
+class RandAugment(Transform):
+    """torchvision RandAugment: ``num_ops`` times per image, one of 14 ops
+    (identity, shear, translate, rotate, brightness, colour, contrast,
+    sharpness, posterize, solarize, autocontrast, equalize) chosen uniformly,
+    at ``magnitude`` (an index into ``num_magnitude_bins`` levels) with a
+    random sign where the op has one. Each op runs as its own pass after the
+    resize and crops. ``interpolation`` is ``"nearest"`` (default) or
+    ``"bilinear"``; ``fill=None`` (default) keeps torch's zero padding,
+    otherwise one or three values on the 0-1 scale. Colour ops follow
+    torchvision's float behaviour (posterize to ``floor(value * 2**bits) /
+    2**bits``)."""
+
+    _kind = "policy"
+
+    def __init__(self, num_ops: int = 2, magnitude: int = 9, num_magnitude_bins: int = 31,
+                 interpolation: Any = "nearest", fill: Any = None, same_on_batch: bool = False):
+        def is_int(v: Any) -> bool:
+            return isinstance(v, numbers.Integral) and not isinstance(v, bool)
+
+        if not (is_int(num_ops) and num_ops >= 0):
+            raise ValueError(f"RandAugment: num_ops must be a non-negative int, got {num_ops!r}")
+        if not (is_int(num_magnitude_bins) and num_magnitude_bins >= 2):
+            # torchvision's posterize table divides by num_magnitude_bins - 1
+            raise ValueError("RandAugment: num_magnitude_bins must be an int >= 2, got "
+                             f"{num_magnitude_bins!r}")
+        if not (is_int(magnitude) and 0 <= magnitude < num_magnitude_bins):
+            raise ValueError(f"RandAugment: magnitude must be an int in [0, num_magnitude_bins), "
+                             f"got {magnitude!r}")
+        self.num_ops, self.magnitude = int(num_ops), int(magnitude)
+        self.num_magnitude_bins = int(num_magnitude_bins)
+        self.interpolation = _warp_interpolation(interpolation, "RandAugment")
+        self.fill = None if fill is None else _fill3(fill, "RandAugment")
+        self.same_on_batch = bool(same_on_batch)
+        self._steps = [_RandAugmentOp(self) for _ in range(self.num_ops)]
+
+    def _children(self) -> list[Transform]:
+        return list(self._steps)
+
+    def _value(self, start: float, end: float) -> float:
+        return _lin_f32(start, end, self.num_magnitude_bins, self.magnitude)
+
+    def __repr__(self) -> str:
+        return (f"RandAugment(num_ops={self.num_ops}, magnitude={self.magnitude}, "
+                f"num_magnitude_bins={self.num_magnitude_bins}, "
+                f"interpolation={self.interpolation!r}, fill={self.fill})")
+
+
+class _RandAugmentOp(Transform):
+    """One of RandAugment's ops: a pass whose input warps or sharpens (or
+    copies) the previous one, then its colour ops. Slots: the op code, the
+    sign (+-1), the eight warp coefficients of shaders/warp.slang."""
+
+    _kind = "warp"      # it may warp: flips after it apply after it
+
+    def __init__(self, parent: RandAugment):
+        self.parent = parent
+
+    @property
+    def same_on_batch(self) -> bool:     # type: ignore[override]
+        return self.parent.same_on_batch
+
+    def _slot_count(self) -> int:
+        return 10
+
+    def _stat_layout(self) -> list[tuple[str, int]]:
+        return [("mean", 1), ("minmax", 6), ("lut", 768)]      # contrast, autocontrast, equalize
+
+    def _pre(self, b: Binding) -> list[str] | None:
+        return None
+
+    def _sample(self, b: Binding, rng: str) -> list[str]:
+        ra, k = self.parent, b.k(self)
+        shear = _dlit(math.degrees(math.atan(ra._value(0.0, 0.3))))
+        rotate = _dlit(ra._value(0.0, 30.0))
+        corner = "-0.5l * double(CW), -0.5l * double(CH)"      # center=[0, 0]
+        return [
+            "{",
+            f"    int op = irand({rng}, {len(_RA_OPS)});",
+            f"    float sg = rnd({rng}) <= 0.5 ? -1.0 : 1.0;",
+            "    double sd = double(sg);",
+            "    double m[8]; for (int i = 0; i < 8; ++i) m[i] = 0.0l;",
+            f"    if (op == 1) affine_coeffs(CW, CH, 0.0l, 0.0l, 0.0l, 1.0l, sd * {shear}, 0.0l, "
+            f"{corner}, m);",
+            f"    if (op == 2) affine_coeffs(CW, CH, 0.0l, 0.0l, 0.0l, 1.0l, 0.0l, sd * {shear}, "
+            f"{corner}, m);",
+            "    if (op == 3 || op == 4) {",
+            "        int size = op == 3 ? CW : CH;",
+            f"        double end = double(float({_dlit(150.0 / 331.0)} * double(size)));",
+            # torchvision truncates the translation to whole pixels: int(magnitude)
+            f"        double t = sd * double(int(lin_f32(0.0l, end, {ra.num_magnitude_bins}, "
+            f"{ra.magnitude})));",
+            "        affine_coeffs(CW, CH, 0.0l, op == 3 ? t : 0.0l, op == 4 ? t : 0.0l, 1.0l, "
+            "0.0l, 0.0l, 0.0l, 0.0l, m);",
+            "    }",
+            # rotate passes -angle to the affine matrix
+            f"    if (op == 5) affine_coeffs(CW, CH, -sd * {rotate}, 0.0l, 0.0l, 1.0l, 0.0l, 0.0l, "
+            "0.0l, 0.0l, m);",
+            f"    p[uint2({k}, b)] = float(op); p[uint2({k + 1}, b)] = sg;",
+            f"    for (int i = 0; i < 8; ++i) p[uint2({k + 2} + i, b)] = float(m[i]);",
+            "}"]
+
+    def _input(self, b: Binding) -> list[str]:
+        ra, k = self.parent, b.k(self)
+        v = ra._value(0.0, 0.9)
+        sharp = (f"{P(k + 1)} > 0.0 ? {lit(1.0 - (1.0 + v))} : {lit(1.0 - (1.0 - v))}")
+        return [f"int op = int({P(k)});",
+                "if (op == 9) {", "    MidImage img = { src, b, OW, OH, 1 };",
+                f"    return sharpen(img, x, y, {sharp});", "}",
+                "if (op < 1 || op > 5) return load_mid(src, x, y, b);",
+                *_warp_lines(k + 2, ra.interpolation, ra.fill)]
+
+    def _post(self, b: Binding) -> list[str]:
+        ra, k = self.parent, b.k(self)
+        mean, minmax, lut = b.stats(self)
+        v = ra._value(0.0, 0.9)
+        f = f"({P(k + 1)} > 0.0 ? {lit(1.0 + v)} : {lit(1.0 - v)})"
+        x = 8 - _f32(_f32(ra.magnitude) / _f32((ra.num_magnitude_bins - 1) / 4))
+        bits = int(round(_f32(x)))         # torch.round: half to even, as Python's round
+        levels = lit(float(1 << max(0, min(8, bits))))
+        mm = ", ".join(ST(minmax + i) for i in range(6))
+        return [f"{{ int op = int({P(k)});",
+                f"  if (op == 6) c = brightness(c, {f});",
+                f"  if (op == 7) c = saturation(c, {f});",
+                f"  if (op == 8) {{ {stop(mean)} c = contrast(c, {f}, {ST(mean)}); }}",
+                f"  if (op == 10) c = posterize(c, {levels});",
+                f"  if (op == 11) c = solarize(c, {lit(ra._value(1.0, 0.0))});",
+                f"  if (op == 12) {{ {stop(minmax)} c = autocontrast(c, {mm}); }}",
+                f"  if (op == 13) {{ {stop(lut)} c = equalize(c, st, b, {lut}); }}",
+                "}"]
+
+    def __repr__(self) -> str:
+        return f"_RandAugmentOp(of {self.parent!r})"
 
 
 # --------------------------------------------------------------- others
@@ -812,7 +953,7 @@ class RandomApply(Transform):
         kinds = {t._kind for t in self.transforms}
         if kinds - {"pointwise", "neighbourhood", "warp"}:
             raise ValueError("RandomApply holds colour ops, blurs and warps, not resizes, "
-                             "crops, flips (they have their own p) or Normalize")
+                             "crops, flips (they have their own p), policies or Normalize")
         if kinds - {"pointwise"} and len(self.transforms) != 1:
             raise ValueError("RandomApply holds either pointwise ops or exactly one op that "
                              "reads neighbouring pixels (such as GaussianBlur or "
@@ -867,7 +1008,7 @@ class RandomChoice(Transform):
         kinds = [t._kind for t in self.transforms]
         if set(kinds) - {"pointwise", "neighbourhood", "warp"}:
             raise ValueError("RandomChoice holds colour ops, blurs and warps, not resizes, "
-                             "crops, flips or Normalize")
+                             "crops, flips, policies or Normalize")
         if len(kinds) - kinds.count("pointwise") > 1:
             raise ValueError("RandomChoice holds at most one op that reads neighbouring pixels "
                              "(a blur or a warp)")

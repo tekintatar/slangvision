@@ -88,6 +88,18 @@ def test_warps_start_a_pass_and_take_the_flips_after_them():
     A.Compose([A.RandomRotation((-90, 90), interpolation="bilinear", fill=(0.5, 0.5, 0.5))])
 
 
+def test_rand_augment_builds_one_pass_per_op():
+    ra = A.RandAugment(num_ops=3)
+    pipe = A.Compose([A.RandomResizedCrop(224), A.RandomHorizontalFlip(), ra,
+                      A.Normalize(MEAN, STD), A.RandomErasing(p=0.25)])
+    src = pipe.source
+    assert "stage_3" in src and "stage_4" not in src
+    # contrast, autocontrast and equalize statistics for each op pass
+    assert [kind for kind, _, _ in pipe._b.stat_groups] == ["mean", "minmax", "lut"] * 3
+    assert "stage_0" in A.Compose([A.RandAugment(num_ops=0)]).source
+    assert "RandAugment(num_ops=3" in repr(pipe)
+
+
 @pytest.mark.parametrize("make, match", [
     (lambda: A.RandomSolarize(128), "0-1 scale"),
     (lambda: A.ColorJitter(brightness=-0.1), "non-negative"),
@@ -147,6 +159,14 @@ def test_warps_start_a_pass_and_take_the_flips_after_them():
     (lambda: A.RandomPerspective(p=-0.1), "p must be in"),
     (lambda: A.RandomApply([A.RandomRotation(5), A.RandomGrayscale()]), "exactly one"),
     (lambda: A.RandomPosterize(9), "bits"),
+    (lambda: A.RandAugment(num_ops=-1), "num_ops"),
+    (lambda: A.RandAugment(magnitude=31), "magnitude"),
+    (lambda: A.RandAugment(magnitude=1.5), "magnitude"),
+    (lambda: A.RandAugment(num_magnitude_bins=1, magnitude=0), "num_magnitude_bins"),
+    (lambda: A.RandAugment(interpolation="bicubic"), "nearest or bilinear"),
+    (lambda: A.RandAugment(fill=2.0), "0-1 scale"),
+    (lambda: A.RandomApply([A.RandAugment()]), "policies"),
+    (lambda: A.Compose([A.RandAugment(), A.RandomResizedCrop(64)]), "must come first"),
     (lambda: A.RandomPosterize(4.0), "bits"),
     (lambda: A.RandomAdjustSharpness(-1.0), "non-negative"),
     (lambda: A.RandomEqualize(p=1.5), "p must be in"),

@@ -135,11 +135,12 @@ class Binding:
                              "transform for each use")
         self._k[id(t)] = self.nparams
         self.nparams += t._slot_count()
-        n = t._stat_count()
-        if n:
-            self.stat_groups.append((t._stat_kind, self.nstats, self.stage))
-        self._st[id(t)] = list(range(self.nstats, self.nstats + n))
-        self.nstats += n
+        firsts = []
+        for kind, n in t._stat_layout():
+            self.stat_groups.append((kind, self.nstats, self.stage))
+            firsts.append(self.nstats)
+            self.nstats += n
+        self._st[id(t)] = firsts
         for child in t._children():
             self.bind(child)
 
@@ -147,6 +148,7 @@ class Binding:
         return self._k[id(t)]
 
     def stats(self, t: "Transform") -> list[int]:
+        """The first slot of each of t's statistic groups."""
         return self._st[id(t)]
 
 
@@ -167,6 +169,11 @@ class Transform:
 
     def _stat_count(self) -> int:
         return 0
+
+    def _stat_layout(self) -> list[tuple[str, int]]:
+        """(kind, slot count) of each statistic group this op needs."""
+        n = self._stat_count()
+        return [(self._stat_kind, n)] if n else []
 
     def _children(self) -> list["Transform"]:
         return []

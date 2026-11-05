@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- `RandAugment` (torchvision's: `num_ops`, `magnitude`,
+  `num_magnitude_bins`, `interpolation`, `fill`), with its ops and signs
+  drawn per image; each op is a pass whose input warps, sharpens or copies
+  and whose colour ops follow, with contrast, autocontrast and equalize
+  statistics for the images that choose them. 2.9 ms per batch of 256 after
+  a crop and flip (RTX PRO 4500), against 111 ms for torchvision per image.
+  Warps gain torchvision's `fill=None` (zero padding without the fill blend).
 - `RandomInvert`, `RandomPosterize`, `RandomAdjustSharpness`,
   `RandomAutocontrast` and `RandomEqualize`, following torchvision's float
   behaviour (posterize to `floor(value * 2**bits) / 2**bits`; equalize on the

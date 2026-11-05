@@ -18,11 +18,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ._base import P, Binding, NeighbourhoodOp, Transform, _UserOp, lit
-from .transforms import (CenterCrop, ColorJitter, GaussianBlur, Normalize, Pad,
+from .transforms import (CenterCrop, ColorJitter, GaussianBlur, Normalize, Pad, RandAugment,
                          RandomAdjustSharpness, RandomAffine, RandomApply, RandomAutocontrast,
                          RandomChoice, RandomCrop, RandomEqualize, RandomErasing,
                          RandomHorizontalFlip, RandomPerspective, RandomResizedCrop,
-                         RandomRotation, RandomVerticalFlip, Resize, _Window)
+                         RandomRotation, RandomVerticalFlip, Resize, _RandAugmentOp, _Window)
 
 if TYPE_CHECKING:
     import torch
@@ -149,12 +149,17 @@ def _dtype_name(dtype: Any) -> str:
 _BUILT_IN = (RandomResizedCrop, Resize, CenterCrop, Pad, RandomCrop, RandomHorizontalFlip,
              RandomVerticalFlip, RandomRotation, RandomAffine, RandomPerspective, ColorJitter,
              GaussianBlur, RandomAdjustSharpness, RandomAutocontrast, RandomEqualize,
-             RandomApply, RandomChoice, Normalize, RandomErasing)
+             RandomApply, RandomChoice, Normalize, RandomErasing, RandAugment)
+
+
+def _expand(transforms: Sequence[Transform]) -> list[Transform]:
+    """The pipeline as Compose plans it: a policy becomes its op passes."""
+    return [s for t in transforms for s in (t._children() if isinstance(t, RandAugment) else [t])]
 
 
 def _walk(transforms: Sequence[Transform]):
-    for t in transforms:
-        if not isinstance(t, (_BUILT_IN, _UserOp)):
+    for t in _expand(transforms):
+        if not isinstance(t, (_BUILT_IN, _UserOp, _RandAugmentOp)):
             raise TypeError(f"Compose takes slangvision transforms; define your own "
                             f"with ColorOp or NeighbourhoodOp, got {t!r}")
         yield t
@@ -224,7 +229,7 @@ class Compose:
         self._normalize: Normalize | None = None
         self._erasing: list[RandomErasing] = []
         user_neighbourhood = False
-        for i, t in enumerate(self.transforms):
+        for t in _expand(self.transforms):
             kind = t._kind
             if self._erasing and kind != "erase":
                 raise ValueError("RandomErasing must come last (after Normalize)")
@@ -284,7 +289,7 @@ class Compose:
         for w in self._windows:
             b.win[id(w)] = b.nparams
             b.nparams += _WINDOW_SLOTS
-        for t in self.transforms:
+        for t in _expand(self.transforms):
             if t._kind in ("neighbourhood", "warp"):
                 b.stage += 1
             b.bind(t)

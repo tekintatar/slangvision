@@ -1,11 +1,28 @@
-// shaders/color.slang — torchvision's colour adjustments (ColorJitter) and
-// the per-image order of its four ops.
+// shaders/color.slang — torchvision's colour adjustments (ColorJitter, the
+// policy ops) on float images, and the per-image order of ColorJitter's ops.
 
 float4 brightness(float4 c, float f) { return clamp01(c * f); }
 
 float4 contrast(float4 c, float f, float mean) { return clamp01(f * c + (1.0 - f) * mean); }
 
 float4 saturation(float4 c, float f) { return clamp01(f * c + (1.0 - f) * gray(c)); }
+
+float4 invert(float4 c) { return float4(1.0 - c.x, 1.0 - c.y, 1.0 - c.z, 0.0); }
+
+float4 solarize(float4 c, float t)
+{
+    return float4(c.x >= t ? 1.0 - c.x : c.x, c.y >= t ? 1.0 - c.y : c.y,
+                  c.z >= t ? 1.0 - c.z : c.z, 0.0);
+}
+
+// torchvision's float posterize: n = 2**bits levels, floor(value * n) / n
+float4 posterize(float4 c, float n)
+{
+    float top = n - 1.0;
+    float k = 1.0 / n;
+    return float4(clamp(floor(c.x * n), 0.0, top) * k, clamp(floor(c.y * n), 0.0, top) * k,
+                  clamp(floor(c.z * n), 0.0, top) * k, 0.0);
+}
 
 // torchvision adjust_hue: RGB -> HSV, shift the hue, HSV -> RGB
 float4 hue(float4 c, float shift)

@@ -311,6 +311,19 @@ def test_custom_op_helper_names_do_not_clash(images):
     _check([A.RandomResizedCrop(48), Darken(), Brighten(p=0.5)], images)
 
 
+def test_custom_op_may_reuse_a_library_helper_name(batch):
+    # the library defines posterize(float4, float); an op's own one wins inside its namespace
+    class Halve(A.ColorOp):
+        slang = ("float4 posterize(float4 c, float n) { return c * (1.0 / n); } "
+                 "float4 apply(float4 c) { return posterize(c, 2.0); }")
+
+        def reference(self, img):
+            return img * 0.5
+
+    # unresampled images: no value lands on one of posterize's level edges
+    _check([Halve(), A.RandomPosterize(3, p=0.5)], batch)
+
+
 def test_one_op_class_used_twice(images):
     _check([A.RandomResizedCrop(48), A.RandomApply([A.ColorJitter(0.4), A.RandomGrayscale(p=1.0)]),
             A.RandomGrayscale(p=0.2)], images)
@@ -759,3 +772,81 @@ def test_statistic_ops_with_p_0_leave_images_unchanged(batch):
     pipe = A.Compose([A.RandomEqualize(p=0.0), A.RandomAutocontrast(p=0.0)],
                      dtype=torch.float32)
     assert torch.equal(pipe(batch), batch.float() * (1.0 / 255.0))
+
+
+# --------------------------------------------------------------- RandAugment
+@pytest.fixture(scope="module")
+def many(batch):
+    """120 unresampled images: enough for every RandAugment op to come up."""
+    return batch.repeat(20, 1, 1, 1)
+
+
+@pytest.mark.parametrize("ra", [
+    A.RandAugment(num_ops=1, interpolation="bilinear"),
+    A.RandAugment(num_ops=1, magnitude=30, interpolation="bilinear", fill=(0.2, 0.4, 0.6)),
+    A.RandAugment(num_ops=1),
+    A.RandAugment(num_ops=1, magnitude=20, fill=0.5),
+    A.RandAugment(num_ops=1, magnitude=0, num_magnitude_bins=5),
+], ids=repr)
+def test_one_rand_augment_op_on_unresampled_images_matches_torchvision(ra, many):
+    # one op on k/255 values: the step ops (posterize, solarize, equalize) see
+    # no edge cases, so only the nearest warps may differ, at rounding ties.
+    # ShearX at magnitude 20 (0.2) about the corner puts every fifth row of
+    # these sizes exactly on half pixels, where torch's float32 grid rounds
+    # either way: those images differ on whole rows
+    pipe = A.Compose([ra], dtype=torch.float32)
+    torch.manual_seed(0)
+    out, params = pipe._run(many, "chw")
+    ops = params[:, pipe._b.k(ra._children()[0])].int()
+    assert set(ops.tolist()) == set(range(14))
+    bad = ((out - _replay(pipe, many, params)).abs() > TOL32).float().mean().item()
+    limit = 1e-9 if ra.interpolation == "bilinear" else 5e-3 if ra.magnitude == 20 else 1e-3
+    assert bad < limit
+
+
+@pytest.mark.parametrize("ra", [
+    A.RandAugment(),
+    A.RandAugment(num_ops=3, magnitude=15, interpolation="bilinear"),
+    A.RandAugment(num_ops=2, magnitude=9, num_magnitude_bins=11, fill=0.5),
+], ids=repr)
+def test_rand_augment_in_a_recipe_matches_torchvision_off_level_edges(ra, images):
+    # after resampling, a value on a posterize/solarize/equalize edge can land
+    # on either side, and nearest warps can pick the neighbouring pixel
+    assert _mismatch([A.RandomResizedCrop(96), A.RandomHorizontalFlip(), ra,
+                      A.RandomVerticalFlip(), A.Normalize(MEAN, STD)], images) < 3e-3
+
+
+def test_statistic_ops_after_rand_augment_match_torchvision(many):
+    # equalize and autocontrast after the op pass read their own statistics;
+    # after a bilinear warp, equalize can meet a level edge
+    assert _mismatch([A.RandAugment(num_ops=1, interpolation="bilinear"),
+                      A.RandomAutocontrast(p=0.5), A.RandomEqualize(p=0.5)], many[:48]) < 2e-3
+
+
+def test_rand_augment_float16_output(images):
+    # the float16 image between passes moves values across equalize's 256
+    # quantization levels far more often than float32 does, and each moved
+    # value can shift the image's table: about 2% of values end a level
+    # (1/255, 0.017 after Normalize) from torchvision's float32 result
+    torch.manual_seed(0)
+    pipe = A.Compose([A.RandomResizedCrop(96), A.RandAugment(interpolation="bilinear"),
+                      A.Normalize(MEAN, STD)])
+    out, params = pipe._run(images, "chw")
+    d = (out.float() - _replay(pipe, images, params)).abs()
+    assert (d > TOL16).float().mean().item() < 5e-2
+    assert torch.quantile(d.flatten()[::7], 0.9).item() < TOL16
+
+
+def test_rand_augment_draws_ops_and_signs_per_image(batch):
+    ra = A.RandAugment(num_ops=2)
+    shared = A.RandAugment(num_ops=1, same_on_batch=True)
+    pipe = A.Compose([A.Resize((40, 50)), ra, shared])
+    torch.manual_seed(0)
+    _, params = pipe._run(batch.repeat(500, 1, 1, 1), "chw")
+    for step in ra._children():
+        k = pipe._b.k(step)
+        counts = torch.bincount(params[:, k].long(), minlength=14).float() / len(params)
+        assert (counts - 1 / 14).abs().max() < 0.015
+        assert abs((params[:, k + 1] > 0).float().mean().item() - 0.5) < 0.03
+    k = pipe._b.k(shared._children()[0])
+    assert torch.all(params[:, k] == params[0, k]) and torch.all(params[:, k + 1] == params[0, k + 1])

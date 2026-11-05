@@ -96,7 +96,7 @@ versions it saw.
 `RandomAffine`, `RandomPerspective`, `ColorJitter`,
 `RandomGrayscale`, `GaussianBlur`, `RandomSolarize`, `RandomInvert`,
 `RandomPosterize`, `RandomAdjustSharpness`, `RandomAutocontrast`,
-`RandomEqualize`, `RandomApply`, `RandomChoice`, `Normalize` and
+`RandomEqualize`, `RandAugment`, `RandomApply`, `RandomChoice`, `Normalize` and
 `RandomErasing`, with torchvision's names and
 parameters,
 including bilinear or bicubic resizing. Every random transform takes
@@ -196,7 +196,7 @@ script that is not in this repository. Method and caveats are in the
 
 - CUDA only (Linux with an NVIDIA GPU), and not inside CUDA graph capture.
 - Run pipelines from one thread (SlangPy devices are thread-affine).
-- Not yet: the RandAugment, TrivialAugment and AutoAugment policies (their
+- Not yet: timm's RandAugment, TrivialAugmentWide and AutoAugment (their
   ops are here), masks and boxes.
 
 ## Related
