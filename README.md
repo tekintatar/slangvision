@@ -56,9 +56,9 @@
   with one Slang function, fused into the same kernels as the built-ins.
 - **Light.** Pure Python plus Slang source: no compiled extension to build.
 
-> **Pre-alpha**: APIs may still change. This page describes `main`, which has
-> transforms not yet released on PyPI (see the
-> [changelog](https://github.com/tekintatar/slangvision/blob/main/CHANGELOG.md)).
+> **Pre-alpha**: APIs may still change. This page describes `main`; the
+> [changelog](https://github.com/tekintatar/slangvision/blob/main/CHANGELOG.md)
+> says what each release has.
 
 ## Install
 
@@ -69,7 +69,7 @@ pip install slangvision torchvision   # torchvision: for checking results agains
 python -m slangvision setup           # once per environment
 ```
 
-For the unreleased transforms on `main`:
+For the latest `main`:
 `pip install git+https://github.com/tekintatar/slangvision`.
 
 No CUDA Toolkit or environment variables are needed: SlangVision compiles

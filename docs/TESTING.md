@@ -200,3 +200,7 @@ validation of newer code.
   Benchmarks: `benchmarks/results/rtx_pro_4500_review_perf_2026-11-05.json`
   (before/after), `rtx_pro_4500_2026-11-05.json` (README table) and
   `rtx_pro_4500_fgvc_aircraft_*_after_review_2026-11-05.json`.
+- 2026-11-05, release 0.2.0 (the tagged commit: version, changelog and docs
+  on top of 78c73bf), RTX PRO 4500 Blackwell, driver 580.126.16, SlangPy
+  0.42.0, torch 2.13.0+cu130, torchvision 0.28.0, timm 1.0.31: 391 passed,
+  the installed wheel reporting 0.2.0.

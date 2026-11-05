@@ -12,7 +12,7 @@ authors:
 repository-code: "https://github.com/tekintatar/slangvision"
 url: "https://github.com/tekintatar/slangvision"
 license: Apache-2.0
-version: 0.1.0
+version: 0.2.0
 keywords:
   - data-augmentation
   - computer-vision

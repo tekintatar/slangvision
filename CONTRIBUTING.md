@@ -76,7 +76,9 @@ Linux NVIDIA host with the scripts in `scripts/cuda_box/`.
 
 Maintainers release by setting the version in `pyproject.toml`,
 `src/slangvision/__init__.py` and `CITATION.cff`, moving the CHANGELOG
-entries under a dated version heading, and pushing a `vX.Y.Z` tag on `main`.
+entries under a dated version heading, and pushing a `vX.Y.Z` tag on `main`;
+afterwards `main` goes to the next `.dev0` version (in `pyproject.toml` and
+`__init__.py`) with a new `Unreleased` heading.
 The `publish` workflow checks that the tag matches the package version,
 builds the archives and uploads them to PyPI through trusted publishing (no
 stored token). CI cannot run the CUDA tests, so before tagging run the

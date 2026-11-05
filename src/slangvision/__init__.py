@@ -19,7 +19,7 @@ with :class:`ColorOp` and :class:`NeighborhoodOp`. Needs PyTorch with CUDA.
 See docs/GUIDE.md.
 """
 
-__version__ = "0.2.0.dev0"
+__version__ = "0.2.0"
 
 # Before SlangPy loads: a GPU decoder that already ran would make SlangPy
 # segfault creating its CUDA device, so stop with a clear message instead.

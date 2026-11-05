@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-11-05
 
 ### Added
 - `slangvision.testing.compare_to_reference`: besides the largest
@@ -109,7 +109,7 @@
 - The NVRTC error and the README say to pin an older NVRTC after other
   installs, since installing torch or torchvision restores PyTorch's.
 - The CUDA tests stop with one message when the GPU or NVRTC is not set up.
-- `main` reports version 0.2.0.dev0.
+- Between releases, `main` reports a `.dev0` version.
 - `import slangvision` after torchvision or DALI decoded on the GPU warns,
   and the first pipeline call raises a RuntimeError that says to import it
   first (Linux; `SLANGVISION_ALLOW_LATE_IMPORT=1` overrides); before, the
