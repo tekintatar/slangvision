@@ -18,7 +18,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ._base import P, Binding, NeighbourhoodOp, Transform, _UserOp, lit
-from .transforms import (AutoAugment, CenterCrop, ColorJitter, GaussianBlur, Normalize, Pad,
+from .transforms import (AutoAugment, CenterCrop, ColorJitter, GaussianBlur, GaussianNoise,
+                         Normalize, Pad,
                          RandAugment,
                          RandomAdjustSharpness, RandomAffine, RandomApply, RandomAutocontrast,
                          RandomChoice, RandomCrop, RandomEqualize, RandomErasing,
@@ -86,7 +87,7 @@ def _stats_kernel(kind: str, k: int, s: int, args: str, inp: str) -> list[str]:
         return [f"    for (int j = 0; j < {_CHUNK}; ++j) {{",
                 f"        int x = pix.x * {_CHUNK} + j;",
                 "        if (x >= OW) break;",
-                f"        float4 c = chain_{s}({inp}, p, st, b, {k}, hit);",
+                f"        float4 c = chain_{s}({inp}, p, st, b, x, y, {k}, hit);",
                 f"        if (!hit) return{skip};"]
     head = f"(int3 pix, {args}, Tensor<float, 2> p, Tensor<float, 2> st"
     if kind in ("mean", "mean_pil"):   # gray sum; Compose divides by the pixel count
@@ -153,7 +154,8 @@ def _dtype_name(dtype: Any) -> str:
 _BUILT_IN = (RandomResizedCrop, Resize, CenterCrop, Pad, RandomCrop, RandomHorizontalFlip,
              RandomVerticalFlip, RandomRotation, RandomAffine, RandomPerspective, ColorJitter,
              GaussianBlur, RandomAdjustSharpness, RandomAutocontrast, RandomEqualize,
-             RandomApply, RandomChoice, Normalize, RandomErasing, RandAugment, TimmRandAugment,
+             RandomApply, RandomChoice, Normalize, RandomErasing, GaussianNoise, RandAugment,
+             TimmRandAugment,
              TrivialAugmentWide, AutoAugment)
 
 
@@ -419,7 +421,7 @@ class Compose:
         # and sets `hit` (left false when this image does not apply that op)
         for s, stage in enumerate(self._stages):
             src += [f"float4 chain_{s}(float4 c, Tensor<float, 2> p, Tensor<float, 2> st, int b,"
-                    " int upto, out bool hit)", "{", "    hit = false;"]
+                    " int x, int y, int upto, out bool hit)", "{", "    hit = false;"]
             src += [f"    {ln}" for t in stage
                     for ln in (t._post(b) if t._kind in ("neighbourhood", "warp")
                                else t._apply(b))]
@@ -445,7 +447,7 @@ class Compose:
                     f"             {dst} dst, int OW, int OH, float4 mean, float4 inv_std)",
                     "{",
                     "    int b = pix.z; int x = pix.x; int y = pix.y; bool hit;",
-                    f"    float4 c = chain_{s}({inp}, p, st, b, -1, hit);",
+                    f"    float4 c = chain_{s}({inp}, p, st, b, x, y, -1, hit);",
                     f"    {store}",
                     "}", ""]
             for kind, k, stat_stage in b.stat_groups:

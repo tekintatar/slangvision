@@ -85,6 +85,7 @@ the GPU device once per process); later calls reuse the compiled kernels.
 | `TimmRandAugment(config="rand-m9-mstd0.5-inc1", interpolation="random", fill=(124, 116, 104) / 255, translate_pct=0.45)` | timm's RandAugment with Pillow's ops (see below); ops, magnitudes, signs and interpolation drawn per image; comes after the resize and crops |
 | `RandomEqualize(p=0.5)` | decided per image; as in torchvision for float images, the image is quantized to 256 levels and equalized with PIL's scheme, from per-image histograms built by a pre-pass; values outside [0, 1] (bicubic overshoot) are clamped first, where torchvision's cast is undefined |
 | `Normalize(mean, std)` | comes after everything except `RandomErasing` |
+| `GaussianNoise(mean=0.0, sigma=0.1, clip=True)` | adds `mean + sigma * N(0, 1)`, new for every pixel, channel and image (SlangVision's own generator, so not torch's values), then clamps with `clip=True`; a colour op, before `Normalize` |
 | `RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0)` | box drawn per image; comes last (after `Normalize`); `value="random"` fills per-pixel N(0, 1) noise from SlangVision's own generator |
 
 Every random transform takes `same_on_batch=False`. `interpolation` is

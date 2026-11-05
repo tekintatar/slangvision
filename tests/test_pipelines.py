@@ -1022,3 +1022,48 @@ def test_timm_rand_augment_draws_follow_timm(batch):
     assert torch.all(params[:, k] >= 0) and torch.all(params[:, k + 3] == 1)
     k = pipe._b.k(shared._children()[0])
     assert torch.all(params[:, k:k + 11] == params[0, k:k + 11]) and params[0, k + 1].item() == 7.0
+
+
+# ------------------------------------------------------------ GaussianNoise
+def test_gaussian_noise_is_normal_per_pixel_channel_and_image():
+    gray = torch.full((64, 3, 64, 64), 128, dtype=torch.uint8, device="cuda")
+    pipe = A.Compose([A.GaussianNoise(mean=0.02, sigma=0.05, clip=False)], dtype=torch.float32)
+    torch.manual_seed(0)
+    d = pipe(gray) - 128 / 255
+    assert abs(d.mean().item() - 0.02) < 1e-3 and abs(d.std().item() - 0.05) < 1e-3
+    z = ((d - 0.02) / 0.05).flatten()
+    assert abs((z.abs() > 2).float().mean().item() - 0.0455) < 3e-3     # a normal tail
+    flat = d.flatten(2)
+    assert abs(torch.corrcoef(torch.stack([flat[:, 0], flat[:, 1]]).flatten(1))[0, 1]) < 0.01
+    torch.manual_seed(1)
+    assert not torch.equal(pipe(gray), d + 128 / 255)
+
+
+def test_gaussian_noise_clips_and_the_rest_matches_torchvision(images, batch):
+    torch.manual_seed(0)
+    out = A.Compose([A.GaussianNoise(sigma=0.5)], dtype=torch.float32)(batch)
+    assert out.min().item() == 0.0 and out.max().item() == 1.0
+    # without noise (sigma 0) the op is mean plus the clamp, replayed exactly
+    _check([A.RandomResizedCrop(96), A.ColorJitter(0.4, 0.4), A.GaussianNoise(0.05, 0.0),
+            A.RandomHorizontalFlip(), A.Normalize(MEAN, STD)], images)
+
+
+def test_two_noise_ops_draw_independent_noise():
+    gray = torch.full((32, 3, 64, 64), 128, dtype=torch.uint8, device="cuda")
+    torch.manual_seed(0)
+    d = A.Compose([A.GaussianNoise(sigma=0.05, clip=False), A.GaussianNoise(sigma=0.05, clip=False)],
+                  dtype=torch.float32)(gray) - 128 / 255
+    assert abs(d.std().item() - 0.05 * 2 ** 0.5) < 1e-3       # not 0.1: the two do not coincide
+
+
+def test_statistics_after_gaussian_noise_see_the_same_noise(batch):
+    # equalize's histograms are taken in a pre-pass that recomputes the noise:
+    # it must be the noise the image gets
+    noisy = A.Compose([A.GaussianNoise(sigma=0.1)], dtype=torch.float32)
+    eq = A.Compose([A.GaussianNoise(sigma=0.1), A.RandomEqualize(p=1.0)], dtype=torch.float32)
+    torch.manual_seed(3)
+    x = noisy(batch)
+    torch.manual_seed(3)
+    out = eq(batch)
+    from torchvision.transforms.v2 import functional as F
+    assert (out - F.equalize(x)).abs().max().item() < 1e-6

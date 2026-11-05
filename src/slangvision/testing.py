@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import transforms as T
 from ._base import Binding, Transform, _UserOp
-from ._compile import Compose
+from ._compile import Compose, _walk
 
 if TYPE_CHECKING:
     import torch
@@ -36,8 +36,8 @@ def max_reference_error(pipeline: Compose, images: Any, layout: str = "chw") -> 
     output units (normalized, if the pipeline ends with Normalize)."""
     out, params = pipeline._run(images, layout)
     ref = _replay(pipeline, images, params, layout)
-    keep = ~ref.isnan()         # RandomErasing(value="random") noise is not replayed
-    return float((out.float() - ref)[keep].abs().max()) if keep.any() else 0.0
+    keep = ~ref.isnan()         # random noise (GaussianNoise, RandomErasing) is not replayed
+    return float((out.float() - ref)[keep].abs().max()) if keep.any() else float("nan")
 
 
 def _replay(pipeline: Compose, images: Any, params: "torch.Tensor",
@@ -56,7 +56,12 @@ def _replay(pipeline: Compose, images: Any, params: "torch.Tensor",
         for t in pipeline.transforms:
             img = _reference(t, pipeline._b, img, rows[i])
         outs.append(img)
-    return torch.stack(outs)
+    out = torch.stack(outs)
+    # noise cannot be replayed, and ops after it (equalize) can turn its NaN
+    # placeholder back into numbers: nothing after noise is comparable
+    if any(isinstance(t, T.GaussianNoise) and t.sigma > 0 for t in _walk(pipeline.transforms)):
+        out.fill_(float("nan"))
+    return out
 
 
 def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) -> "torch.Tensor":
@@ -136,6 +141,13 @@ def _reference(t: Transform, b: Binding, img: "torch.Tensor", row: list[float]) 
             for child in t.transforms:
                 img = _reference(child, b, img, row)
         return img
+    if isinstance(t, T.GaussianNoise):
+        import torch
+
+        if t.sigma > 0:     # noise cannot be replayed: max_reference_error skips NaN
+            return torch.full_like(img, float("nan"))
+        out = img + t.mean
+        return out.clamp(0, 1) if t.clip else out
     if isinstance(t, T.RandomErasing):
         import torch
 

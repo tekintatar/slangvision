@@ -29,6 +29,7 @@ output and 4e-3 for float16 output, in normalized units.
 | Normalize | reference (in every recipe) |
 | MixUp, CutMix | draws identical to torchvision's `make_params` under the same seeds (CPU); images (1e-6) and labels (exact) equal to torchvision's `v2.MixUp`/`v2.CutMix` on CUDA; float16 and bfloat16 outputs; input errors and empty batches |
 | MixUpCutMix | kernel output equals the mixing its parameters describe in batch, pair and elem modes; partners mirrored; CutMix label weight from the clipped box; timm's smoothed labels; switch/prob rates and Beta mean; `cutmix_minmax` box sizes |
+| GaussianNoise | statistics on a flat image: mean and std of the added noise, a normal tail, channels uncorrelated, new per call; two noise ops independent (std adds in quadrature); clipping; the rest of a recipe replayed exactly at sigma 0; equalize after noise equals torchvision's equalize of the same noisy image (the pre-pass recomputes the same noise) |
 | RandomErasing | reference: constant and per-channel fills after Normalize, without Normalize, two boxes in order, random fill (box compared, noise skipped); noise mean 0 and std 1 with a normal tail, different per image; box area, aspect and rate follow torchvision's sampler; `same_on_batch` gives one box |
 | bfloat16 output | ImageNet and SimCLR recipes within one bfloat16 step of the float32 reference; the one-pass ImageNet recipe rounds like torch for more than 95% of values |
 | RandomInvert, RandomPosterize | reference: exact on images that are not resampled (posterize at 0, 3 and 8 bits); after RandomResizedCrop and ColorJitter, posterize off its level edges (under 2e-3 of values; measured about 5e-6 of pixels) |
@@ -144,3 +145,8 @@ validation of newer code.
   counts with posterize ties added) 305 passed. Benchmark: `trivialaug` and `autoaug` recipes (with `imagenet` and
   `randaug` in the same run), raw data in
   `benchmarks/results/rtx_pro_4500_policies_2026-11-05.json`.
+- 2026-11-05, GaussianNoise (colour chains take the pixel position), same
+  host and stack: 311 passed; after the review (noise keys advance the
+  random stream, which also fixes RandomErasing's key reusing the next
+  draw's bits) 312 passed. Cost (+0.16 ms on the ImageNet recipe) from an
+  ad-hoc script, median of 30 synced calls.

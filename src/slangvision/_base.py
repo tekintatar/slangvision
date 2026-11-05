@@ -187,6 +187,8 @@ class Transform:
         return []
 
     def _apply(self, b: Binding) -> list[str]:
+        """For a pointwise op: lines that update `float4 c` (with p, st, b and
+        the output pixel x, y in scope)."""
         return []
 
     def _post(self, b: Binding) -> list[str]:

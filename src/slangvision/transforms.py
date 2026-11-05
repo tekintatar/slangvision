@@ -1423,6 +1423,37 @@ class Normalize(Transform):
         return f"Normalize(mean={self.mean}, std={self.std})"
 
 
+# ----------------------------------------------------------------- noise
+class GaussianNoise(Transform):
+    """torchvision GaussianNoise: adds ``mean + sigma * N(0, 1)`` to every
+    value, new noise for every pixel, channel and image, then clamps to [0, 1]
+    with ``clip=True``. A colour op (before Normalize); the noise comes from
+    SlangVision's own generator, so it differs from torch's."""
+
+    def __init__(self, mean: float = 0.0, sigma: float = 0.1, clip: bool = True):
+        self.mean, self.sigma, self.clip = float(mean), float(sigma), bool(clip)
+        if not math.isfinite(self.mean):
+            raise ValueError(f"GaussianNoise: mean must be finite, got {mean}")
+        if not (math.isfinite(self.sigma) and self.sigma >= 0):
+            raise ValueError(f"GaussianNoise: sigma must be non-negative, got {sigma}")
+
+    def _slot_count(self) -> int:
+        return 1            # the image's noise key
+
+    def _sample(self, b: Binding, rng: str) -> list[str]:
+        # advance the stream: the next draw must not reuse the key's bits
+        return [f"{rng} = pcg({rng}); p[uint2({b.k(self)}, b)] = float({rng} >> 8);   "
+                "// 24 bits: exact in a float"]
+
+    def _apply(self, b: Binding) -> list[str]:
+        noise = f"normal4(uint({P(b.k(self))}), b, x, y)"
+        c = f"c + ({lit(self.mean)} + {lit(self.sigma)} * {noise})"
+        return [f"c = clamp01({c});" if self.clip else f"c = {c};"]
+
+    def __repr__(self) -> str:
+        return f"GaussianNoise(mean={self.mean}, sigma={self.sigma}, clip={self.clip})"
+
+
 # --------------------------------------------------------------- erasing
 class RandomErasing(Transform):
     """torchvision RandomErasing: with probability ``p``, fill one box per image
@@ -1476,7 +1507,8 @@ class RandomErasing(Transform):
             f"    p[uint2({k}, b)] = on && found ? 1.0 : 0.0;",
             f"    p[uint2({k + 1}, b)] = float(et); p[uint2({k + 2}, b)] = float(el);",
             f"    p[uint2({k + 3}, b)] = float(eh); p[uint2({k + 4}, b)] = float(ew);",
-            f"    p[uint2({k + 5}, b)] = float(pcg({rng}) >> 8);     // 24 bits: exact in a float",
+            f"    {rng} = pcg({rng}); p[uint2({k + 5}, b)] = float({rng} >> 8);   "
+            "// 24 bits: exact in a float",
             "}"]
 
     def _erase(self, b: Binding) -> list[str]:
